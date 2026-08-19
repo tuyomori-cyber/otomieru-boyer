@@ -1,0 +1,5 @@
+!.context/
+/.context/*
+!/.context/session.md
+!/.context/root-todo.md
+target/
