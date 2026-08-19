@@ -5,6 +5,8 @@ use crate::app::state::AppState;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ToolbarActions {
     pub open_requested: bool,
+    pub play_pause_requested: bool,
+    pub stop_requested: bool,
 }
 
 pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
@@ -27,15 +29,14 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
                 .add_enabled(state.track.is_some(), egui::Button::new(play_label))
                 .clicked()
             {
-                state.playback.playing = !state.playback.playing;
+                actions.play_pause_requested = true;
             }
 
             if ui
                 .add_enabled(state.track.is_some(), egui::Button::new("Stop"))
                 .clicked()
             {
-                state.playback.playing = false;
-                state.playback.position_seconds = 0.0;
+                actions.stop_requested = true;
             }
 
             ui.separator();

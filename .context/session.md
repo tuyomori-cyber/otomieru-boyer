@@ -1,16 +1,15 @@
 # Current State
 
-Updated: 1787116455
+Updated: 1787116548
 
 Now:
-- Done: ファイルダイアログを導入
-- Done: `Open` から `Symphonia` デコードを実行し、`Track` を `AppState` に反映する処理を実装
-- Done: 読み込み済みファイル情報と状態メッセージを UI に反映
-- Done: `cargo check` でビルド成立を確認
+- Done: `CPAL` を使う通常再生エンジンの最小実装を追加
+- Done: `Play` / `Stop` を `audio::player` 経由へ接続
+- Pending: Linux 音声バックエンドのシステム依存不足でビルド未完了
 
 Next:
-- `CPAL` を追加して `audio::player` の再生基盤を実装
-- Play / Stop を実際の音声出力へ接続
+- `pkg-config` と `libasound2-dev` の導入後に `cargo check` を再実行
+- 再生位置同期と Pause の実動作確認
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.
