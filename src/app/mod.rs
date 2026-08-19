@@ -66,6 +66,9 @@ impl eframe::App for OtomieruApp {
         if actions.seek_to_start_requested {
             self.player.seek_to_start();
         }
+        if let Some(seconds) = actions.seek_seconds {
+            self.player.seek_to_seconds(seconds);
+        }
         if actions.play_pause_requested || (space_pressed && self.state.track.is_some()) {
             if self.player.transport_state() == crate::audio::player::TransportState::Playing {
                 self.player.pause();

@@ -1,14 +1,16 @@
 # Current State
 
-Updated: 1787117062
+Updated: 1787117785
 
 Now:
-- Done: `Space` キーで再生/ポーズ切り替えを追加
-- Done: `Play` 横に先頭へ戻る `|<` ボタンを追加
+- Done: 再生位置更新をチャンネル単位からフレーム単位へ修正
+- Done: 再生速度が不自然に遅くなる疑いのある箇所を調整
 - Done: `cargo check` でビルド成立を確認
+- Pending: 実機で再生速度が正常化したか確認
 
 Next:
-- 仕様書順で STFT と静止スペクトログラム実装へ進む
+- 実機で再生速度確認
+- 問題が解消したら STFT と静止スペクトログラム実装へ進む
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.

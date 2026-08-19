@@ -7,6 +7,7 @@ pub struct ToolbarActions {
     pub open_requested: bool,
     pub play_pause_requested: bool,
     pub seek_to_start_requested: bool,
+    pub seek_seconds: Option<f64>,
     pub stop_requested: bool,
 }
 
@@ -67,11 +68,39 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
 
             ui.separator();
 
-            ui.monospace(format!("{:05.2} sec", state.playback.position_seconds));
+            let duration = state
+                .track
+                .as_ref()
+                .map(|track| track.duration_seconds)
+                .unwrap_or(0.0);
+
+            let mut seek_value = state.playback.position_seconds;
+            let slider = egui::Slider::new(&mut seek_value, 0.0..=duration.max(0.0))
+                .show_value(false)
+                .min_decimals(2)
+                .max_decimals(2);
+
+            let response = ui.add_enabled(state.track.is_some(), slider);
+            if response.changed() {
+                actions.seek_seconds = Some(seek_value);
+            }
+
+            ui.monospace(format!(
+                "{} / {}",
+                format_mm_ss(state.playback.position_seconds),
+                format_mm_ss(duration)
+            ));
         });
 
         ui.add_space(4.0);
     });
 
     actions
+}
+
+fn format_mm_ss(seconds: f64) -> String {
+    let total_seconds = seconds.max(0.0).floor() as u64;
+    let minutes = total_seconds / 60;
+    let secs = total_seconds % 60;
+    format!("{minutes:02}:{secs:02}")
 }

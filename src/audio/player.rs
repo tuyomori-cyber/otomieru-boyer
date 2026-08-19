@@ -105,6 +105,11 @@ impl AudioPlayer {
         shared.position_frames = 0.0;
     }
 
+    pub fn seek_to_seconds(&mut self, seconds: f64) {
+        let mut shared = self.shared.lock().expect("playback mutex poisoned");
+        shared.seek_to_seconds(seconds);
+    }
+
     pub fn transport_state(&self) -> TransportState {
         self.shared
             .lock()
@@ -162,8 +167,17 @@ impl PlaybackShared {
         self.samples.len() / self.source_channels.max(1) as usize
     }
 
+    fn duration_seconds(&self) -> f64 {
+        self.total_source_frames() as f64 / self.source_sample_rate.max(1) as f64
+    }
+
     fn is_finished(&self) -> bool {
         self.position_frames >= self.total_source_frames() as f64
+    }
+
+    fn seek_to_seconds(&mut self, seconds: f64) {
+        let clamped = seconds.clamp(0.0, self.duration_seconds());
+        self.position_frames = clamped * self.source_sample_rate as f64;
     }
 
     fn next_value(&mut self, output_channel: usize) -> f32 {
@@ -179,19 +193,21 @@ impl PlaybackShared {
         }
 
         let source_channel = output_channel.min(self.source_channels.saturating_sub(1) as usize);
-        let value = interpolate_sample(
+        interpolate_sample(
             &self.samples,
             self.source_channels as usize,
             self.position_frames,
             source_channel,
-        );
+        )
+    }
 
-        if output_channel + 1 == self.output_channels as usize {
-            let ratio = self.source_sample_rate as f64 / self.output_sample_rate as f64;
-            self.position_frames += ratio;
+    fn advance_frame(&mut self) {
+        if self.transport != TransportState::Playing {
+            return;
         }
 
-        value
+        let ratio = self.source_sample_rate as f64 / self.output_sample_rate as f64;
+        self.position_frames += ratio;
     }
 }
 
@@ -223,6 +239,8 @@ where
             let value = shared.next_value(channel);
             *sample = T::from_sample(value);
         }
+
+        shared.advance_frame();
     }
 }
 
