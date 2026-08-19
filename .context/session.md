@@ -1,16 +1,16 @@
 # Current State
 
-Updated: 1787115433
+Updated: 1787116249
 
 Now:
-- Done: Rustプロジェクトを新規作成し、`eframe/egui`で最小ウィンドウ起動の土台を実装
-- Done: `app` / `audio` / `analysis` / `ui` / `model` の仕様書準拠の骨格を作成
-- Done: `cargo check` と `cargo fmt` を実行して初期構成の成立を確認
-- Pending: 音声ファイル読み込みと `Track` 生成の実装
+- Done: `Symphonia` を依存追加
+- Done: 音声ファイルを PCM `f32` にデコードする `audio::decoder::decode_file(...)` を実装
+- Done: `DecodedAudio` から `Track` を作る変換を追加
+- Done: `cargo check` でビルド成立を確認
 
 Next:
-- `Symphonia` を追加して `Open` とデコード処理を実装
-- 通常速度の再生基盤を `audio::player` に入れる
+- ファイルダイアログ導入
+- `Open` で `Track` 読み込みと状態更新を実装
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.
