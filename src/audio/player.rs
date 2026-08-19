@@ -1,14 +1,27 @@
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig};
+use cpal::{
+    FromSample, Sample, SampleFormat, SampleRate, SizedSample, Stream, StreamConfig,
+    SupportedStreamConfig,
+};
 
 use crate::model::Track;
 
 pub struct AudioPlayer {
-    shared: Arc<Mutex<PlaybackShared>>,
+    runtime: Option<Arc<PlaybackRuntime>>,
     stream: Option<Stream>,
+    output_info: Option<OutputStreamInfo>,
+}
+
+#[derive(Clone)]
+pub struct PlayerSnapshot {
+    pub transport: TransportState,
+    pub position_seconds: f64,
+    pub debug_summary: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -19,10 +32,29 @@ pub enum TransportState {
     Stopped,
 }
 
+impl TransportState {
+    fn as_u8(self) -> u8 {
+        match self {
+            Self::Stopped => 0,
+            Self::Playing => 1,
+            Self::Paused => 2,
+        }
+    }
+
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Playing,
+            2 => Self::Paused,
+            _ => Self::Stopped,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum PlayerError {
     NoOutputDevice,
     DefaultConfig(cpal::DefaultStreamConfigError),
+    SupportedConfigs(cpal::SupportedStreamConfigsError),
     BuildStream(cpal::BuildStreamError),
     PlayStream(cpal::PlayStreamError),
 }
@@ -32,6 +64,9 @@ impl fmt::Display for PlayerError {
         match self {
             Self::NoOutputDevice => write!(f, "no default output device found"),
             Self::DefaultConfig(error) => write!(f, "failed to get default output config: {error}"),
+            Self::SupportedConfigs(error) => {
+                write!(f, "failed to query supported output configs: {error}")
+            }
             Self::BuildStream(error) => write!(f, "failed to build output stream: {error}"),
             Self::PlayStream(error) => write!(f, "failed to start output stream: {error}"),
         }
@@ -43,8 +78,9 @@ impl std::error::Error for PlayerError {}
 impl AudioPlayer {
     pub fn new() -> Self {
         Self {
-            shared: Arc::new(Mutex::new(PlaybackShared::default())),
+            runtime: None,
             stream: None,
+            output_info: None,
         }
     }
 
@@ -53,26 +89,33 @@ impl AudioPlayer {
         let device = host
             .default_output_device()
             .ok_or(PlayerError::NoOutputDevice)?;
-        let config = device
+        let default_config = device
             .default_output_config()
             .map_err(PlayerError::DefaultConfig)?;
-        let stream_config: StreamConfig = config.config();
+        let config =
+            select_output_config(&device, track, default_config).map_err(PlayerError::SupportedConfigs)?;
+        let stream_config = config.config();
 
-        {
-            let mut shared = self.shared.lock().expect("playback mutex poisoned");
-            *shared = PlaybackShared::from_track(track, &stream_config);
-        }
+        let runtime = Arc::new(PlaybackRuntime::from_track(track, &stream_config));
+        let runtime_for_stream = Arc::clone(&runtime);
 
-        let shared = Arc::clone(&self.shared);
         let stream = match config.sample_format() {
-            SampleFormat::F32 => build_output_stream::<f32>(&device, &stream_config, shared),
-            SampleFormat::I16 => build_output_stream::<i16>(&device, &stream_config, shared),
-            SampleFormat::U16 => build_output_stream::<u16>(&device, &stream_config, shared),
-            _ => build_output_stream::<f32>(&device, &stream_config, shared),
+            SampleFormat::F32 => {
+                build_output_stream::<f32>(&device, &stream_config, runtime_for_stream)
+            }
+            SampleFormat::I16 => {
+                build_output_stream::<i16>(&device, &stream_config, runtime_for_stream)
+            }
+            SampleFormat::U16 => {
+                build_output_stream::<u16>(&device, &stream_config, runtime_for_stream)
+            }
+            _ => build_output_stream::<f32>(&device, &stream_config, runtime_for_stream),
         }
         .map_err(PlayerError::BuildStream)?;
 
         stream.play().map_err(PlayerError::PlayStream)?;
+        self.output_info = Some(OutputStreamInfo::from_config(config.sample_format(), &stream_config));
+        self.runtime = Some(runtime);
         self.stream = Some(stream);
         Ok(())
     }
@@ -81,47 +124,74 @@ impl AudioPlayer {
         if let Some(stream) = &self.stream {
             stream.play().map_err(PlayerError::PlayStream)?;
         }
-        let mut shared = self.shared.lock().expect("playback mutex poisoned");
-        if shared.is_finished() {
-            shared.position_frames = 0.0;
+
+        if let Some(runtime) = &self.runtime {
+            if runtime.is_finished() {
+                runtime.set_position_frames(0.0);
+            }
+            runtime
+                .transport
+                .store(TransportState::Playing.as_u8(), Ordering::Relaxed);
         }
-        shared.transport = TransportState::Playing;
+
         Ok(())
     }
 
     pub fn pause(&mut self) {
-        let mut shared = self.shared.lock().expect("playback mutex poisoned");
-        shared.transport = TransportState::Paused;
+        if let Some(runtime) = &self.runtime {
+            runtime
+                .transport
+                .store(TransportState::Paused.as_u8(), Ordering::Relaxed);
+        }
     }
 
     pub fn stop(&mut self) {
-        let mut shared = self.shared.lock().expect("playback mutex poisoned");
-        shared.transport = TransportState::Stopped;
-        shared.position_frames = 0.0;
+        if let Some(runtime) = &self.runtime {
+            runtime
+                .transport
+                .store(TransportState::Stopped.as_u8(), Ordering::Relaxed);
+            runtime.set_position_frames(0.0);
+        }
     }
 
     pub fn seek_to_start(&mut self) {
-        let mut shared = self.shared.lock().expect("playback mutex poisoned");
-        shared.position_frames = 0.0;
+        if let Some(runtime) = &self.runtime {
+            runtime.set_position_frames(0.0);
+        }
     }
 
     pub fn seek_to_seconds(&mut self, seconds: f64) {
-        let mut shared = self.shared.lock().expect("playback mutex poisoned");
-        shared.seek_to_seconds(seconds);
+        if let Some(runtime) = &self.runtime {
+            runtime.seek_to_seconds(seconds);
+        }
     }
 
-    pub fn transport_state(&self) -> TransportState {
-        self.shared
-            .lock()
-            .expect("playback mutex poisoned")
-            .transport
-    }
+    pub fn snapshot(&self) -> PlayerSnapshot {
+        let output = self
+            .output_info
+            .as_ref()
+            .map(OutputStreamInfo::summary)
+            .unwrap_or_else(|| "output: not initialized".to_owned());
 
-    pub fn current_position_seconds(&self) -> f64 {
-        self.shared
-            .lock()
-            .expect("playback mutex poisoned")
-            .current_position_seconds()
+        let Some(runtime) = &self.runtime else {
+            return PlayerSnapshot {
+                transport: TransportState::Stopped,
+                position_seconds: 0.0,
+                debug_summary: output,
+            };
+        };
+
+        PlayerSnapshot {
+            transport: TransportState::from_u8(runtime.transport.load(Ordering::Relaxed)),
+            position_seconds: runtime.current_position_seconds(),
+            debug_summary: format!(
+                "source: {} Hz / {} ch / {:.5}x step | {}",
+                runtime.source_sample_rate,
+                runtime.source_channels,
+                runtime.step_ratio(),
+                output
+            ),
+        }
     }
 }
 
@@ -131,35 +201,26 @@ impl Default for AudioPlayer {
     }
 }
 
-#[derive(Default)]
-struct PlaybackShared {
-    samples: Vec<f32>,
+struct PlaybackRuntime {
+    samples: Arc<[f32]>,
     source_channels: u16,
     source_sample_rate: u32,
     output_channels: u16,
     output_sample_rate: u32,
-    position_frames: f64,
-    transport: TransportState,
+    position_frames_bits: AtomicU64,
+    transport: AtomicU8,
 }
 
-impl PlaybackShared {
+impl PlaybackRuntime {
     fn from_track(track: &Track, config: &StreamConfig) -> Self {
         Self {
-            samples: track.samples.clone(),
+            samples: Arc::from(track.samples.clone()),
             source_channels: track.channels.max(1),
             source_sample_rate: track.sample_rate.max(1),
             output_channels: config.channels.max(1),
             output_sample_rate: config.sample_rate.0.max(1),
-            position_frames: 0.0,
-            transport: TransportState::Stopped,
-        }
-    }
-
-    fn current_position_seconds(&self) -> f64 {
-        if self.source_sample_rate == 0 {
-            0.0
-        } else {
-            self.position_frames / self.source_sample_rate as f64
+            position_frames_bits: AtomicU64::new(0.0f64.to_bits()),
+            transport: AtomicU8::new(TransportState::Stopped.as_u8()),
         }
     }
 
@@ -171,50 +232,80 @@ impl PlaybackShared {
         self.total_source_frames() as f64 / self.source_sample_rate.max(1) as f64
     }
 
-    fn is_finished(&self) -> bool {
-        self.position_frames >= self.total_source_frames() as f64
+    fn current_position_frames(&self) -> f64 {
+        f64::from_bits(self.position_frames_bits.load(Ordering::Relaxed))
     }
 
-    fn seek_to_seconds(&mut self, seconds: f64) {
+    fn set_position_frames(&self, frames: f64) {
+        self.position_frames_bits
+            .store(frames.to_bits(), Ordering::Relaxed);
+    }
+
+    fn current_position_seconds(&self) -> f64 {
+        self.current_position_frames() / self.source_sample_rate.max(1) as f64
+    }
+
+    fn seek_to_seconds(&self, seconds: f64) {
         let clamped = seconds.clamp(0.0, self.duration_seconds());
-        self.position_frames = clamped * self.source_sample_rate as f64;
+        self.set_position_frames(clamped * self.source_sample_rate as f64);
     }
 
-    fn next_value(&mut self, output_channel: usize) -> f32 {
-        if self.transport != TransportState::Playing {
-            return 0.0;
-        }
+    fn is_finished(&self) -> bool {
+        self.current_position_frames() >= self.total_source_frames() as f64
+    }
 
-        let total_frames = self.total_source_frames() as f64;
-        if total_frames == 0.0 || self.position_frames >= total_frames {
-            self.transport = TransportState::Stopped;
-            self.position_frames = total_frames;
-            return 0.0;
-        }
+    fn step_ratio(&self) -> f64 {
+        self.source_sample_rate as f64 / self.output_sample_rate.max(1) as f64
+    }
+}
 
-        let source_channel = output_channel.min(self.source_channels.saturating_sub(1) as usize);
-        interpolate_sample(
-            &self.samples,
-            self.source_channels as usize,
-            self.position_frames,
-            source_channel,
+pub const UI_REPAINT_INTERVAL: Duration = Duration::from_millis(33);
+
+#[derive(Clone)]
+pub struct OutputStreamInfo {
+    sample_rate: u32,
+    channels: u16,
+    sample_format: &'static str,
+}
+
+impl OutputStreamInfo {
+    fn from_config(sample_format: SampleFormat, config: &StreamConfig) -> Self {
+        Self {
+            sample_rate: config.sample_rate.0,
+            channels: config.channels,
+            sample_format: sample_format_name(sample_format),
+        }
+    }
+
+    fn summary(&self) -> String {
+        format!(
+            "output: {} Hz / {} ch / {}",
+            self.sample_rate, self.channels, self.sample_format
         )
     }
+}
 
-    fn advance_frame(&mut self) {
-        if self.transport != TransportState::Playing {
-            return;
-        }
-
-        let ratio = self.source_sample_rate as f64 / self.output_sample_rate as f64;
-        self.position_frames += ratio;
+fn sample_format_name(sample_format: SampleFormat) -> &'static str {
+    match sample_format {
+        SampleFormat::I8 => "i8",
+        SampleFormat::I16 => "i16",
+        SampleFormat::I24 => "i24",
+        SampleFormat::I32 => "i32",
+        SampleFormat::I64 => "i64",
+        SampleFormat::U8 => "u8",
+        SampleFormat::U16 => "u16",
+        SampleFormat::U32 => "u32",
+        SampleFormat::U64 => "u64",
+        SampleFormat::F32 => "f32",
+        SampleFormat::F64 => "f64",
+        _ => "unknown",
     }
 }
 
 fn build_output_stream<T>(
     device: &cpal::Device,
     config: &StreamConfig,
-    shared: Arc<Mutex<PlaybackShared>>,
+    runtime: Arc<PlaybackRuntime>,
 ) -> Result<Stream, cpal::BuildStreamError>
 where
     T: Sample + SizedSample + FromSample<f32>,
@@ -222,26 +313,51 @@ where
     let output_channels = config.channels as usize;
     device.build_output_stream(
         config,
-        move |data: &mut [T], _| write_data(data, output_channels, &shared),
+        move |data: &mut [T], _| write_data(data, output_channels, &runtime),
         move |error| eprintln!("audio stream error: {error}"),
         None,
     )
 }
 
-fn write_data<T>(output: &mut [T], output_channels: usize, shared: &Arc<Mutex<PlaybackShared>>)
+fn write_data<T>(output: &mut [T], output_channels: usize, runtime: &Arc<PlaybackRuntime>)
 where
     T: Sample + FromSample<f32>,
 {
-    let mut shared = shared.lock().expect("playback mutex poisoned");
+    let transport = TransportState::from_u8(runtime.transport.load(Ordering::Relaxed));
+    let mut position_frames = runtime.current_position_frames();
+    let total_frames = runtime.total_source_frames() as f64;
 
     for frame in output.chunks_mut(output_channels) {
+        if transport != TransportState::Playing || total_frames == 0.0 || position_frames >= total_frames
+        {
+            if position_frames >= total_frames && total_frames > 0.0 {
+                runtime
+                    .transport
+                    .store(TransportState::Stopped.as_u8(), Ordering::Relaxed);
+                position_frames = total_frames;
+            }
+
+            for sample in frame {
+                *sample = T::from_sample(0.0);
+            }
+            continue;
+        }
+
         for (channel, sample) in frame.iter_mut().enumerate() {
-            let value = shared.next_value(channel);
+            let source_channel = channel.min(runtime.source_channels.saturating_sub(1) as usize);
+            let value = interpolate_sample(
+                &runtime.samples,
+                runtime.source_channels as usize,
+                position_frames,
+                source_channel,
+            );
             *sample = T::from_sample(value);
         }
 
-        shared.advance_frame();
+        position_frames += runtime.step_ratio();
     }
+
+    runtime.set_position_frames(position_frames);
 }
 
 fn interpolate_sample(
@@ -266,4 +382,32 @@ fn sample_at(samples: &[f32], channels: usize, frame: usize, channel: usize) -> 
         .saturating_add(channel.min(channels.saturating_sub(1)));
 
     samples.get(index).copied().unwrap_or(0.0)
+}
+
+fn select_output_config(
+    device: &cpal::Device,
+    track: &Track,
+    default_config: SupportedStreamConfig,
+) -> Result<SupportedStreamConfig, cpal::SupportedStreamConfigsError> {
+    let default_channels = default_config.channels();
+    let default_format = default_config.sample_format();
+    let mut best_default_channel_match: Option<SupportedStreamConfig> = None;
+
+    for range in device.supported_output_configs()? {
+        if range.channels() != default_channels || range.sample_format() != default_format {
+            continue;
+        }
+
+        let exact_rate_supported = range.min_sample_rate().0 <= track.sample_rate
+            && track.sample_rate <= range.max_sample_rate().0;
+
+        if !exact_rate_supported {
+            continue;
+        }
+
+        best_default_channel_match = Some(range.with_sample_rate(SampleRate(track.sample_rate)));
+        break;
+    }
+
+    Ok(best_default_channel_match.unwrap_or(default_config))
 }

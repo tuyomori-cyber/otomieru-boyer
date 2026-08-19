@@ -7,7 +7,6 @@ pub struct ToolbarActions {
     pub open_requested: bool,
     pub play_pause_requested: bool,
     pub seek_to_start_requested: bool,
-    pub seek_seconds: Option<f64>,
     pub stop_requested: bool,
 }
 
@@ -73,17 +72,6 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
                 .as_ref()
                 .map(|track| track.duration_seconds)
                 .unwrap_or(0.0);
-
-            let mut seek_value = state.playback.position_seconds;
-            let slider = egui::Slider::new(&mut seek_value, 0.0..=duration.max(0.0))
-                .show_value(false)
-                .min_decimals(2)
-                .max_decimals(2);
-
-            let response = ui.add_enabled(state.track.is_some(), slider);
-            if response.changed() {
-                actions.seek_seconds = Some(seek_value);
-            }
 
             ui.monospace(format!(
                 "{} / {}",

@@ -4,7 +4,7 @@ use eframe::egui;
 
 use crate::app::state::AppState;
 use crate::audio::decoder::decode_file;
-use crate::audio::player::AudioPlayer;
+use crate::audio::player::{AudioPlayer, TransportState, UI_REPAINT_INTERVAL};
 use crate::ui::{piano, spectrogram, toolbar};
 
 pub struct OtomieruApp {
@@ -65,25 +65,28 @@ impl eframe::App for OtomieruApp {
         }
         if actions.seek_to_start_requested {
             self.player.seek_to_start();
-        }
-        if let Some(seconds) = actions.seek_seconds {
-            self.player.seek_to_seconds(seconds);
+            self.state.playback.position_seconds = 0.0;
         }
         if actions.play_pause_requested || (space_pressed && self.state.track.is_some()) {
-            if self.player.transport_state() == crate::audio::player::TransportState::Playing {
+            if self.state.playback.playing {
                 self.player.pause();
+                self.state.playback.playing = false;
             } else if let Err(error) = self.player.play() {
                 self.state
                     .set_status(format!("再生開始に失敗しました: {error}"));
+            } else {
+                self.state.playback.playing = true;
             }
         }
         if actions.stop_requested {
             self.player.stop();
+            self.state.playback.playing = false;
+            self.state.playback.position_seconds = 0.0;
         }
 
-        self.state.playback.playing =
-            self.player.transport_state() == crate::audio::player::TransportState::Playing;
-        self.state.playback.position_seconds = self.player.current_position_seconds();
+        let snapshot = self.player.snapshot();
+        self.state.playback.playing = snapshot.transport == TransportState::Playing;
+        self.state.playback.position_seconds = snapshot.position_seconds;
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical(|ui| {
@@ -91,7 +94,15 @@ impl eframe::App for OtomieruApp {
 
                 ui.horizontal(|ui| {
                     piano::show(ui, &self.state);
-                    spectrogram::show(ui, &self.state);
+                    let spectrogram_actions = spectrogram::show(ui, &self.state);
+                    if let Some(seconds) = spectrogram_actions.seek_seconds {
+                        self.player.seek_to_seconds(seconds);
+                        self.state.playback.position_seconds = seconds;
+                    }
+                    if let Some(page_seconds) = spectrogram_actions.page_seek_seconds {
+                        self.player.seek_to_seconds(page_seconds);
+                        self.state.playback.position_seconds = page_seconds;
+                    }
                 });
 
                 ui.add_space(8.0);
@@ -99,6 +110,8 @@ impl eframe::App for OtomieruApp {
             });
         });
 
-        ctx.request_repaint();
+        if self.state.playback.playing {
+            ctx.request_repaint_after(UI_REPAINT_INTERVAL);
+        }
     }
 }

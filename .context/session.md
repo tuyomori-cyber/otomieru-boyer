@@ -1,16 +1,16 @@
 # Current State
 
-Updated: 1787117785
+Updated: 1787122364
 
 Now:
-- Done: 再生位置更新をチャンネル単位からフレーム単位へ修正
-- Done: 再生速度が不自然に遅くなる疑いのある箇所を調整
+- Done: 曲長ベースのページ分割を表示へ反映
+- Done: 再生中のページ内縦線更新を復帰
+- Done: 停止中の全体ページバー操作でページ先頭へ移動する導線を追加
 - Done: `cargo check` でビルド成立を確認
-- Pending: 実機で再生速度が正常化したか確認
 
 Next:
-- 実機で再生速度確認
-- 問題が解消したら STFT と静止スペクトログラム実装へ進む
+- ページ内縦線と全体ページバーの実機挙動確認
+- 問題なければ STFT と静止スペクトログラム本体実装へ進む
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.
