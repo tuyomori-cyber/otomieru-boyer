@@ -1,16 +1,16 @@
 # Current State
 
-Updated: 1787123279
+Updated: 1787124665
 
 Now:
-- Done: `RustFFT` を追加し、STFT 事前計算を実装
-- Done: 表示用スペクトログラムデータ構造を実装
-- Done: 音源読み込み時に解析して `Track` へ格納
-- Done: ページ分割UIへ静止スペクトログラム描画を接続
+- Done: スペクトログラム上の長押しで基準音が鳴り続けるよう実装
+- Done: 押したまま上下移動で音程追従するよう実装
+- Done: 再生中でもプレビュー音が鳴るようにした
+- Done: `cargo check` でビルド成立を確認
 
 Next:
-- 実機でスペクトログラム表示の見え方を確認
-- その後にピアノ鍵盤との縦軸一致とクリック音確認へ進む
+- 長押しプレビューの実機挙動確認
+- 問題なければループ範囲選択とループ再生へ進む
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.

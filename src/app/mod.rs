@@ -5,11 +5,13 @@ use eframe::egui;
 use crate::app::state::AppState;
 use crate::audio::decoder::decode_file;
 use crate::audio::player::{AudioPlayer, TransportState, UI_REPAINT_INTERVAL};
+use crate::audio::preview_tone::{PreviewTonePlayer, PreviewToneRequest};
 use crate::ui::{piano, spectrogram, toolbar};
 
 pub struct OtomieruApp {
     state: AppState,
     player: AudioPlayer,
+    preview_tone_player: Option<PreviewTonePlayer>,
 }
 
 impl OtomieruApp {
@@ -17,6 +19,7 @@ impl OtomieruApp {
         Self {
             state: AppState::default(),
             player: AudioPlayer::default(),
+            preview_tone_player: PreviewTonePlayer::new().ok(),
         }
     }
 
@@ -102,6 +105,18 @@ impl eframe::App for OtomieruApp {
                     if let Some(page_seconds) = spectrogram_actions.page_seek_seconds {
                         self.player.seek_to_seconds(page_seconds);
                         self.state.playback.position_seconds = page_seconds;
+                    }
+                    if let Some(midi_note) = spectrogram_actions.preview_midi_note {
+                        if let Some(preview_tone_player) = &self.preview_tone_player {
+                            preview_tone_player.update_preview(PreviewToneRequest { midi_note });
+                            self.state.preview_tone_active = true;
+                        }
+                    }
+                    if spectrogram_actions.stop_preview {
+                        if let Some(preview_tone_player) = &self.preview_tone_player {
+                            preview_tone_player.stop_preview();
+                        }
+                        self.state.preview_tone_active = false;
                     }
                 });
 

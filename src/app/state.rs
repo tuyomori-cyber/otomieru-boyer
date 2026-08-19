@@ -19,6 +19,7 @@ pub struct AppState {
     pub loaded_file_path: Option<PathBuf>,
     pub status_text: String,
     pub spectrogram_gain_db: f32,
+    pub preview_tone_active: bool,
 }
 
 impl AppState {
@@ -120,6 +121,7 @@ impl Default for AppState {
             loaded_file_path: None,
             status_text: String::new(),
             spectrogram_gain_db: 0.0,
+            preview_tone_active: false,
         }
     }
 }

@@ -6,19 +6,14 @@ use crate::app::state::AppState;
 pub struct SpectrogramActions {
     pub seek_seconds: Option<f64>,
     pub page_seek_seconds: Option<f64>,
+    pub preview_midi_note: Option<u8>,
+    pub stop_preview: bool,
 }
 
 pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
     let mut actions = SpectrogramActions::default();
     let desired_size = Vec2::new((ui.available_width() - 8.0).max(240.0), 420.0);
-    let (rect, response) = ui.allocate_exact_size(
-        desired_size,
-        if state.playback.playing {
-            Sense::hover()
-        } else {
-            Sense::click()
-        },
-    );
+    let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click_and_drag());
     let painter = ui.painter_at(rect);
 
     painter.rect_filled(rect, 6.0, Color32::from_rgb(15, 24, 35));
@@ -149,20 +144,41 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
         Color32::from_rgb(165, 188, 204),
     );
 
-    if !state.playback.playing && response.clicked() {
-        if let Some(pointer_pos) = response.interact_pointer_pos() {
-            if page_bar_rect.contains(pointer_pos) {
-                let t = ((pointer_pos.x - page_bar_rect.left()) / page_bar_rect.width())
-                    .clamp(0.0, 0.999_999) as f64;
-                let page_index = (t * paging.page_count as f64).floor() as usize;
-                let page_seek = page_index.min(paging.page_count.saturating_sub(1)) as f64
-                    * paging.page_duration_seconds;
-                actions.page_seek_seconds = Some(page_seek);
-            } else {
+    let content_rect = egui::Rect::from_min_max(rect.left_top(), rect.right_bottom() - egui::vec2(0.0, 40.0));
+
+    if let Some(pointer_pos) = response.interact_pointer_pos() {
+        if page_bar_rect.contains(pointer_pos) && !state.playback.playing && response.clicked() {
+            let t = ((pointer_pos.x - page_bar_rect.left()) / page_bar_rect.width())
+                .clamp(0.0, 0.999_999) as f64;
+            let page_index = (t * paging.page_count as f64).floor() as usize;
+            let page_seek = page_index.min(paging.page_count.saturating_sub(1)) as f64
+                * paging.page_duration_seconds;
+            actions.page_seek_seconds = Some(page_seek);
+        } else if content_rect.contains(pointer_pos) {
+            if !state.playback.playing && response.clicked() {
                 let t = ((pointer_pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;
                 actions.seek_seconds = Some(page_start + page_duration * t);
             }
+
+            let pointer_down = ui.input(|input| input.pointer.primary_down());
+            if pointer_down {
+                if let Some(track) = &state.track {
+                    if let Some(spectrogram) = &track.spectrogram {
+                        let pitch_t = ((content_rect.bottom() - pointer_pos.y) / content_rect.height())
+                            .clamp(0.0, 0.999_999);
+                        let pitch_index =
+                            (pitch_t * spectrogram.pitches.max(1) as f32).floor() as usize;
+                        let midi_note = spectrogram.min_midi_note
+                            + pitch_index.min(spectrogram.pitches.saturating_sub(1));
+                        actions.preview_midi_note = Some(midi_note as u8);
+                    }
+                }
+            } else if state.preview_tone_active {
+                actions.stop_preview = true;
+            }
         }
+    } else if state.preview_tone_active && !ui.input(|input| input.pointer.primary_down()) {
+        actions.stop_preview = true;
     }
 
     actions
