@@ -67,6 +67,15 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
 
             ui.separator();
 
+            ui.label("Heat");
+            ui.add(
+                egui::Slider::new(&mut state.spectrogram_gain_db, -24.0..=24.0)
+                    .suffix(" dB")
+                    .step_by(1.0),
+            );
+
+            ui.separator();
+
             let duration = state
                 .track
                 .as_ref()

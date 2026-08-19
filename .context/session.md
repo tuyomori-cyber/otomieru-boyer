@@ -1,16 +1,16 @@
 # Current State
 
-Updated: 1787122364
+Updated: 1787123279
 
 Now:
-- Done: 曲長ベースのページ分割を表示へ反映
-- Done: 再生中のページ内縦線更新を復帰
-- Done: 停止中の全体ページバー操作でページ先頭へ移動する導線を追加
-- Done: `cargo check` でビルド成立を確認
+- Done: `RustFFT` を追加し、STFT 事前計算を実装
+- Done: 表示用スペクトログラムデータ構造を実装
+- Done: 音源読み込み時に解析して `Track` へ格納
+- Done: ページ分割UIへ静止スペクトログラム描画を接続
 
 Next:
-- ページ内縦線と全体ページバーの実機挙動確認
-- 問題なければ STFT と静止スペクトログラム本体実装へ進む
+- 実機でスペクトログラム表示の見え方を確認
+- その後にピアノ鍵盤との縦軸一致とクリック音確認へ進む
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.

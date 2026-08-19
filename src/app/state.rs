@@ -18,6 +18,7 @@ pub struct AppState {
     pub selection: Selection,
     pub loaded_file_path: Option<PathBuf>,
     pub status_text: String,
+    pub spectrogram_gain_db: f32,
 }
 
 impl AppState {
@@ -118,6 +119,7 @@ impl Default for AppState {
             selection: Selection::default(),
             loaded_file_path: None,
             status_text: String::new(),
+            spectrogram_gain_db: 0.0,
         }
     }
 }
