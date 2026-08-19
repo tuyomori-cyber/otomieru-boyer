@@ -1,0 +1,109 @@
+use eframe::egui::{self, Align2, Color32, FontId, Sense, Stroke, Vec2};
+
+use crate::app::state::AppState;
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TimelineActions {
+    pub selection_changed: bool,
+}
+
+pub fn show(ui: &mut egui::Ui, state: &mut AppState, left_offset: f32) -> TimelineActions {
+    let mut actions = TimelineActions::default();
+    let desired_size = Vec2::new(ui.available_width(), 34.0);
+    let (full_rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
+    let painter = ui.painter_at(full_rect);
+    let page_start = state.current_page_start_seconds();
+    let page_end = state.current_page_end_seconds();
+    let page_duration = (page_end - page_start).max(0.001);
+
+    let timeline_rect = egui::Rect::from_min_max(
+        egui::pos2(full_rect.left() + left_offset, full_rect.top() + 8.0),
+        egui::pos2(full_rect.right() - 8.0, full_rect.bottom() - 8.0),
+    );
+    let response = ui.interact(
+        timeline_rect,
+        ui.id().with("loop-range-timeline"),
+        Sense::click_and_drag(),
+    );
+
+    painter.rect_filled(full_rect, 0.0, Color32::TRANSPARENT);
+    painter.rect_filled(
+        timeline_rect,
+        999.0,
+        Color32::from_rgba_premultiplied(255, 255, 255, 18),
+    );
+    painter.rect_stroke(
+        timeline_rect,
+        999.0,
+        Stroke::new(1.0, Color32::from_rgba_premultiplied(255, 255, 255, 42)),
+        egui::StrokeKind::Inside,
+    );
+
+    if let Some((start, end)) = state.selection.normalized() {
+        if start >= page_start && end <= page_end {
+            let start_x = time_to_x(start, page_start, page_duration, timeline_rect);
+            let end_x = time_to_x(end, page_start, page_duration, timeline_rect);
+            let selection_rect = egui::Rect::from_min_max(
+                egui::pos2(start_x, timeline_rect.top()),
+                egui::pos2(end_x, timeline_rect.bottom()),
+            );
+            painter.rect_filled(
+                selection_rect,
+                999.0,
+                Color32::from_rgba_premultiplied(80, 180, 255, 84),
+            );
+        }
+    }
+
+    if response.drag_started() {
+        if let Some(pointer_pos) = response.interact_pointer_pos() {
+            let seconds = x_to_time(pointer_pos.x, page_start, page_duration, timeline_rect);
+            state.selection.set_range(seconds, seconds);
+            actions.selection_changed = true;
+        }
+    }
+
+    if response.dragged() {
+        if let Some(pointer_pos) = response.interact_pointer_pos() {
+            let seconds = x_to_time(pointer_pos.x, page_start, page_duration, timeline_rect);
+            let start = state.selection.start_seconds.unwrap_or(seconds);
+            state.selection.set_range(start, seconds);
+            actions.selection_changed = true;
+        }
+    }
+
+    if response.drag_stopped() {
+        if state.selection.normalized().is_none() {
+            state.selection.clear();
+        }
+        actions.selection_changed = true;
+    }
+
+    painter.text(
+        timeline_rect.left_center() + egui::vec2(6.0, 0.0),
+        Align2::LEFT_CENTER,
+        "Loop Range",
+        FontId::proportional(12.0),
+        Color32::from_rgb(210, 224, 235),
+    );
+
+    painter.text(
+        timeline_rect.right_center() + egui::vec2(-6.0, 0.0),
+        Align2::RIGHT_CENTER,
+        format!("{:.0} - {:.0}s", page_start, page_end),
+        FontId::proportional(12.0),
+        Color32::from_rgb(176, 192, 205),
+    );
+
+    actions
+}
+
+fn time_to_x(seconds: f64, page_start: f64, page_duration: f64, rect: egui::Rect) -> f32 {
+    let t = ((seconds - page_start) / page_duration).clamp(0.0, 1.0) as f32;
+    egui::lerp(rect.left()..=rect.right(), t)
+}
+
+fn x_to_time(x: f32, page_start: f64, page_duration: f64, rect: egui::Rect) -> f64 {
+    let t = ((x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;
+    page_start + page_duration * t
+}

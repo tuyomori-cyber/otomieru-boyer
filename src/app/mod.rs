@@ -6,7 +6,7 @@ use crate::app::state::AppState;
 use crate::audio::decoder::decode_file;
 use crate::audio::player::{AudioPlayer, TransportState, UI_REPAINT_INTERVAL};
 use crate::audio::preview_tone::{PreviewTonePlayer, PreviewToneRequest};
-use crate::ui::{piano, spectrogram, toolbar};
+use crate::ui::{piano, spectrogram, timeline, toolbar};
 
 pub struct OtomieruApp {
     state: AppState,
@@ -66,6 +66,9 @@ impl eframe::App for OtomieruApp {
         if actions.open_requested {
             self.open_audio_file();
         }
+        self.player
+            .set_loop_enabled(self.state.playback.loop_enabled && self.state.selection.normalized().is_some());
+        self.player.set_loop_range(self.state.selection.normalized());
         if actions.seek_to_start_requested {
             self.player.seek_to_start();
             self.state.playback.position_seconds = 0.0;
@@ -93,7 +96,12 @@ impl eframe::App for OtomieruApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical(|ui| {
-                ui.add_space(8.0);
+                ui.add_space(4.0);
+                let _timeline_actions = timeline::show(ui, &mut self.state, 108.0);
+                self.player
+                    .set_loop_enabled(self.state.playback.loop_enabled && self.state.selection.normalized().is_some());
+                self.player.set_loop_range(self.state.selection.normalized());
+                ui.add_space(4.0);
 
                 ui.horizontal(|ui| {
                     piano::show(ui, &self.state);
@@ -105,6 +113,12 @@ impl eframe::App for OtomieruApp {
                     if let Some(page_seconds) = spectrogram_actions.page_seek_seconds {
                         self.player.seek_to_seconds(page_seconds);
                         self.state.playback.position_seconds = page_seconds;
+                    }
+                    if let Some(selection) = spectrogram_actions.updated_selection {
+                        self.state.selection = selection;
+                        self.player
+                            .set_loop_enabled(self.state.playback.loop_enabled && self.state.selection.normalized().is_some());
+                        self.player.set_loop_range(self.state.selection.normalized());
                     }
                     if let Some(midi_note) = spectrogram_actions.preview_midi_note {
                         if let Some(preview_tone_player) = &self.preview_tone_player {

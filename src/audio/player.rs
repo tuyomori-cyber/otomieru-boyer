@@ -1,5 +1,5 @@
 use std::fmt;
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -193,6 +193,39 @@ impl AudioPlayer {
             ),
         }
     }
+
+    pub fn set_loop_enabled(&mut self, enabled: bool) {
+        if let Some(runtime) = &self.runtime {
+            runtime.loop_enabled.store(enabled, Ordering::Relaxed);
+        }
+    }
+
+    pub fn set_loop_range(&mut self, loop_range: Option<(f64, f64)>) {
+        if let Some(runtime) = &self.runtime {
+            if let Some((start, end)) = loop_range {
+                let start_frames = (start * runtime.source_sample_rate as f64)
+                    .clamp(0.0, runtime.total_source_frames() as f64);
+                let end_frames = (end * runtime.source_sample_rate as f64)
+                    .clamp(0.0, runtime.total_source_frames() as f64);
+                runtime
+                    .loop_start_frames_bits
+                    .store(start_frames.to_bits(), Ordering::Relaxed);
+                runtime
+                    .loop_end_frames_bits
+                    .store(end_frames.to_bits(), Ordering::Relaxed);
+
+                if runtime.loop_enabled.load(Ordering::Relaxed) {
+                    let position = runtime.current_position_frames();
+                    if position < start_frames || position >= end_frames {
+                        runtime.set_position_frames(start_frames);
+                    }
+                }
+            } else {
+                runtime.loop_start_frames_bits.store(0.0f64.to_bits(), Ordering::Relaxed);
+                runtime.loop_end_frames_bits.store(0.0f64.to_bits(), Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 impl Default for AudioPlayer {
@@ -209,6 +242,9 @@ struct PlaybackRuntime {
     output_sample_rate: u32,
     position_frames_bits: AtomicU64,
     transport: AtomicU8,
+    loop_enabled: AtomicBool,
+    loop_start_frames_bits: AtomicU64,
+    loop_end_frames_bits: AtomicU64,
 }
 
 impl PlaybackRuntime {
@@ -221,6 +257,9 @@ impl PlaybackRuntime {
             output_sample_rate: config.sample_rate.0.max(1),
             position_frames_bits: AtomicU64::new(0.0f64.to_bits()),
             transport: AtomicU8::new(TransportState::Stopped.as_u8()),
+            loop_enabled: AtomicBool::new(false),
+            loop_start_frames_bits: AtomicU64::new(0.0f64.to_bits()),
+            loop_end_frames_bits: AtomicU64::new(0.0f64.to_bits()),
         }
     }
 
@@ -256,6 +295,20 @@ impl PlaybackRuntime {
 
     fn step_ratio(&self) -> f64 {
         self.source_sample_rate as f64 / self.output_sample_rate.max(1) as f64
+    }
+
+    fn loop_range_frames(&self) -> Option<(f64, f64)> {
+        if !self.loop_enabled.load(Ordering::Relaxed) {
+            return None;
+        }
+
+        let start = f64::from_bits(self.loop_start_frames_bits.load(Ordering::Relaxed));
+        let end = f64::from_bits(self.loop_end_frames_bits.load(Ordering::Relaxed));
+        if end > start {
+            Some((start, end))
+        } else {
+            None
+        }
     }
 }
 
@@ -326,8 +379,15 @@ where
     let transport = TransportState::from_u8(runtime.transport.load(Ordering::Relaxed));
     let mut position_frames = runtime.current_position_frames();
     let total_frames = runtime.total_source_frames() as f64;
+    let loop_range = runtime.loop_range_frames();
 
     for frame in output.chunks_mut(output_channels) {
+        if let Some((loop_start, loop_end)) = loop_range {
+            if position_frames >= loop_end {
+                position_frames = loop_start;
+            }
+        }
+
         if transport != TransportState::Playing || total_frames == 0.0 || position_frames >= total_frames
         {
             if position_frames >= total_frames && total_frames > 0.0 {
