@@ -100,6 +100,11 @@ impl AudioPlayer {
         shared.position_frames = 0.0;
     }
 
+    pub fn seek_to_start(&mut self) {
+        let mut shared = self.shared.lock().expect("playback mutex poisoned");
+        shared.position_frames = 0.0;
+    }
+
     pub fn transport_state(&self) -> TransportState {
         self.shared
             .lock()

@@ -6,6 +6,7 @@ use crate::app::state::AppState;
 pub struct ToolbarActions {
     pub open_requested: bool,
     pub play_pause_requested: bool,
+    pub seek_to_start_requested: bool,
     pub stop_requested: bool,
 }
 
@@ -30,6 +31,13 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
                 .clicked()
             {
                 actions.play_pause_requested = true;
+            }
+
+            if ui
+                .add_enabled(state.track.is_some(), egui::Button::new("|<"))
+                .clicked()
+            {
+                actions.seek_to_start_requested = true;
             }
 
             if ui

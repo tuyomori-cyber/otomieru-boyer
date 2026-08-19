@@ -58,11 +58,15 @@ impl OtomieruApp {
 
 impl eframe::App for OtomieruApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let space_pressed = ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Space));
         let actions = toolbar::show(ctx, &mut self.state);
         if actions.open_requested {
             self.open_audio_file();
         }
-        if actions.play_pause_requested {
+        if actions.seek_to_start_requested {
+            self.player.seek_to_start();
+        }
+        if actions.play_pause_requested || (space_pressed && self.state.track.is_some()) {
             if self.player.transport_state() == crate::audio::player::TransportState::Playing {
                 self.player.pause();
             } else if let Err(error) = self.player.play() {

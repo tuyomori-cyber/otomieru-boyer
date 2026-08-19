@@ -1,15 +1,14 @@
 # Current State
 
-Updated: 1787116548
+Updated: 1787117062
 
 Now:
-- Done: `CPAL` を使う通常再生エンジンの最小実装を追加
-- Done: `Play` / `Stop` を `audio::player` 経由へ接続
-- Pending: Linux 音声バックエンドのシステム依存不足でビルド未完了
+- Done: `Space` キーで再生/ポーズ切り替えを追加
+- Done: `Play` 横に先頭へ戻る `|<` ボタンを追加
+- Done: `cargo check` でビルド成立を確認
 
 Next:
-- `pkg-config` と `libasound2-dev` の導入後に `cargo check` を再実行
-- 再生位置同期と Pause の実動作確認
+- 仕様書順で STFT と静止スペクトログラム実装へ進む
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.
