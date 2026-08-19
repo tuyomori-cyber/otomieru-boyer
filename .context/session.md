@@ -1,16 +1,16 @@
 # Current State
 
-Updated: 1787116249
+Updated: 1787116455
 
 Now:
-- Done: `Symphonia` を依存追加
-- Done: 音声ファイルを PCM `f32` にデコードする `audio::decoder::decode_file(...)` を実装
-- Done: `DecodedAudio` から `Track` を作る変換を追加
+- Done: ファイルダイアログを導入
+- Done: `Open` から `Symphonia` デコードを実行し、`Track` を `AppState` に反映する処理を実装
+- Done: 読み込み済みファイル情報と状態メッセージを UI に反映
 - Done: `cargo check` でビルド成立を確認
 
 Next:
-- ファイルダイアログ導入
-- `Open` で `Track` 読み込みと状態更新を実装
+- `CPAL` を追加して `audio::player` の再生基盤を実装
+- Play / Stop を実際の音声出力へ接続
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.

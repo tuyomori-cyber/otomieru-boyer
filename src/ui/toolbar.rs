@@ -2,23 +2,38 @@ use eframe::egui;
 
 use crate::app::state::AppState;
 
-pub fn show(ctx: &egui::Context, state: &mut AppState) {
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ToolbarActions {
+    pub open_requested: bool,
+}
+
+pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
+    let mut actions = ToolbarActions::default();
+
     egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
         ui.add_space(4.0);
 
         ui.horizontal_wrapped(|ui| {
-            let _ = ui.add_enabled(false, egui::Button::new("Open"));
+            if ui.button("Open").clicked() {
+                actions.open_requested = true;
+            }
 
             let play_label = if state.playback.playing {
                 "Pause"
             } else {
                 "Play"
             };
-            if ui.button(play_label).clicked() {
+            if ui
+                .add_enabled(state.track.is_some(), egui::Button::new(play_label))
+                .clicked()
+            {
                 state.playback.playing = !state.playback.playing;
             }
 
-            if ui.button("Stop").clicked() {
+            if ui
+                .add_enabled(state.track.is_some(), egui::Button::new("Stop"))
+                .clicked()
+            {
                 state.playback.playing = false;
                 state.playback.position_seconds = 0.0;
             }
@@ -48,4 +63,6 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) {
 
         ui.add_space(4.0);
     });
+
+    actions
 }

@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 eframe = "0.33.0"
+rfd = "0.15.4"
 symphonia = { version = "0.5.5", features = ["aac", "flac", "isomp4", "mp3", "ogg", "pcm", "vorbis", "wav"] }
