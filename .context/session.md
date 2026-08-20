@@ -1,14 +1,15 @@
 # Current State
 
-Updated: 1787187862
+Updated: 1787211873
 
 Now:
-- Done: `.context/root-todo.md` をMVP完了後のDSP設計フェーズ向けに整理
-- Done: `.context/session.md` を現在地に合わせて更新
+- Done: 最小構成への復旧で通常再生音が戻った
+- Done: `speed_ratio` に応じて速度変更され、現在はテープ速度変更として動作している
+- Pending: 音程維持付き speed change と長さ維持付き pitch shift の本実装
 
 Next:
-- `Playback DSP Settings` と DSPチェーンの内部構成を具体化
-- 速度変更、オクターブ変更、EQ、スペクトラムズームの優先順と仕様を詰める
+- `speed change with preserve pitch` を独立レイヤとして実装する
+- その後 `pitch shift with preserve duration` を重ね、両方同時適用へ進める
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.
@@ -20,5 +21,5 @@ Relevant:
 - cwd: /home/tuyomori/project/otomieru-boyer
 - file: .context/session.md
 - file: .context/turns.jsonl
-- file: .context/root-todo.md
+- file: dsp_engine.rs
 

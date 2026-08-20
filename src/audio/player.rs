@@ -9,7 +9,9 @@ use cpal::{
     SupportedStreamConfig,
 };
 
-use crate::model::Track;
+use crate::audio::dsp_engine::DspEngine;
+use crate::audio::timestretch::DspTransportEvent;
+use crate::model::{PlaybackDspSettings, Track};
 
 pub struct AudioPlayer {
     runtime: Option<Arc<PlaybackRuntime>>,
@@ -22,6 +24,7 @@ pub struct PlayerSnapshot {
     pub transport: TransportState,
     pub position_seconds: f64,
     pub debug_summary: String,
+    pub dsp_settings: PlaybackDspSettings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -130,6 +133,9 @@ impl AudioPlayer {
                 runtime.set_position_frames(0.0);
             }
             runtime
+                .dsp_engine
+                .notify_transport_event(DspTransportEvent::Start);
+            runtime
                 .transport
                 .store(TransportState::Playing.as_u8(), Ordering::Relaxed);
         }
@@ -151,18 +157,31 @@ impl AudioPlayer {
                 .transport
                 .store(TransportState::Stopped.as_u8(), Ordering::Relaxed);
             runtime.set_position_frames(0.0);
+            runtime
+                .dsp_engine
+                .notify_transport_event(DspTransportEvent::Stop);
         }
     }
 
     pub fn seek_to_start(&mut self) {
         if let Some(runtime) = &self.runtime {
             runtime.set_position_frames(0.0);
+            runtime
+                .dsp_engine
+                .notify_transport_event(DspTransportEvent::Seek {
+                    position_seconds: 0.0,
+                });
         }
     }
 
     pub fn seek_to_seconds(&mut self, seconds: f64) {
         if let Some(runtime) = &self.runtime {
             runtime.seek_to_seconds(seconds);
+            runtime
+                .dsp_engine
+                .notify_transport_event(DspTransportEvent::Seek {
+                    position_seconds: seconds,
+                });
         }
     }
 
@@ -178,19 +197,25 @@ impl AudioPlayer {
                 transport: TransportState::Stopped,
                 position_seconds: 0.0,
                 debug_summary: output,
+                dsp_settings: PlaybackDspSettings::default(),
             };
         };
+
+        let dsp_settings = runtime.current_dsp_settings();
 
         PlayerSnapshot {
             transport: TransportState::from_u8(runtime.transport.load(Ordering::Relaxed)),
             position_seconds: runtime.current_position_seconds(),
             debug_summary: format!(
-                "source: {} Hz / {} ch / {:.5}x step | {}",
-                runtime.source_sample_rate,
-                runtime.source_channels,
+                "source: {} Hz / {} ch / {:.5}x step | dsp {:.2}x / {:+} st | {}",
+                runtime.dsp_engine.source_sample_rate(),
+                runtime.dsp_engine.source_channels_u16(),
                 runtime.step_ratio(),
+                dsp_settings.speed_ratio,
+                dsp_settings.pitch_shift_semitones,
                 output
             ),
+            dsp_settings,
         }
     }
 
@@ -203,9 +228,9 @@ impl AudioPlayer {
     pub fn set_loop_range(&mut self, loop_range: Option<(f64, f64)>) {
         if let Some(runtime) = &self.runtime {
             if let Some((start, end)) = loop_range {
-                let start_frames = (start * runtime.source_sample_rate as f64)
+                let start_frames = (start * runtime.dsp_engine.source_sample_rate() as f64)
                     .clamp(0.0, runtime.total_source_frames() as f64);
-                let end_frames = (end * runtime.source_sample_rate as f64)
+                let end_frames = (end * runtime.dsp_engine.source_sample_rate() as f64)
                     .clamp(0.0, runtime.total_source_frames() as f64);
                 runtime
                     .loop_start_frames_bits
@@ -218,12 +243,24 @@ impl AudioPlayer {
                     let position = runtime.current_position_frames();
                     if position < start_frames || position >= end_frames {
                         runtime.set_position_frames(start_frames);
+                        runtime
+                            .dsp_engine
+                            .notify_transport_event(DspTransportEvent::LoopJump {
+                                start_seconds: start,
+                                end_seconds: end,
+                            });
                     }
                 }
             } else {
                 runtime.loop_start_frames_bits.store(0.0f64.to_bits(), Ordering::Relaxed);
                 runtime.loop_end_frames_bits.store(0.0f64.to_bits(), Ordering::Relaxed);
             }
+        }
+    }
+
+    pub fn set_dsp_settings(&mut self, settings: PlaybackDspSettings) {
+        if let Some(runtime) = &self.runtime {
+            runtime.set_dsp_settings(settings);
         }
     }
 }
@@ -235,11 +272,8 @@ impl Default for AudioPlayer {
 }
 
 struct PlaybackRuntime {
-    samples: Arc<[f32]>,
-    source_channels: u16,
-    source_sample_rate: u32,
+    dsp_engine: DspEngine,
     output_channels: u16,
-    output_sample_rate: u32,
     position_frames_bits: AtomicU64,
     transport: AtomicU8,
     loop_enabled: AtomicBool,
@@ -250,11 +284,13 @@ struct PlaybackRuntime {
 impl PlaybackRuntime {
     fn from_track(track: &Track, config: &StreamConfig) -> Self {
         Self {
-            samples: Arc::from(track.samples.clone()),
-            source_channels: track.channels.max(1),
-            source_sample_rate: track.sample_rate.max(1),
+            dsp_engine: DspEngine::new(
+                Arc::from(track.samples.clone()),
+                track.channels.max(1),
+                track.sample_rate.max(1),
+                config.sample_rate.0.max(1),
+            ),
             output_channels: config.channels.max(1),
-            output_sample_rate: config.sample_rate.0.max(1),
             position_frames_bits: AtomicU64::new(0.0f64.to_bits()),
             transport: AtomicU8::new(TransportState::Stopped.as_u8()),
             loop_enabled: AtomicBool::new(false),
@@ -264,11 +300,11 @@ impl PlaybackRuntime {
     }
 
     fn total_source_frames(&self) -> usize {
-        self.samples.len() / self.source_channels.max(1) as usize
+        self.dsp_engine.total_source_frames()
     }
 
     fn duration_seconds(&self) -> f64 {
-        self.total_source_frames() as f64 / self.source_sample_rate.max(1) as f64
+        self.total_source_frames() as f64 / self.dsp_engine.source_sample_rate().max(1) as f64
     }
 
     fn current_position_frames(&self) -> f64 {
@@ -281,12 +317,12 @@ impl PlaybackRuntime {
     }
 
     fn current_position_seconds(&self) -> f64 {
-        self.current_position_frames() / self.source_sample_rate.max(1) as f64
+        self.current_position_frames() / self.dsp_engine.source_sample_rate().max(1) as f64
     }
 
     fn seek_to_seconds(&self, seconds: f64) {
         let clamped = seconds.clamp(0.0, self.duration_seconds());
-        self.set_position_frames(clamped * self.source_sample_rate as f64);
+        self.set_position_frames(clamped * self.dsp_engine.source_sample_rate() as f64);
     }
 
     fn is_finished(&self) -> bool {
@@ -294,7 +330,7 @@ impl PlaybackRuntime {
     }
 
     fn step_ratio(&self) -> f64 {
-        self.source_sample_rate as f64 / self.output_sample_rate.max(1) as f64
+        self.dsp_engine.step_ratio()
     }
 
     fn loop_range_frames(&self) -> Option<(f64, f64)> {
@@ -309,6 +345,14 @@ impl PlaybackRuntime {
         } else {
             None
         }
+    }
+
+    fn current_dsp_settings(&self) -> PlaybackDspSettings {
+        self.dsp_engine.current_dsp_settings()
+    }
+
+    fn set_dsp_settings(&self, settings: PlaybackDspSettings) {
+        self.dsp_engine.set_dsp_settings(settings);
     }
 }
 
@@ -380,11 +424,18 @@ where
     let mut position_frames = runtime.current_position_frames();
     let total_frames = runtime.total_source_frames() as f64;
     let loop_range = runtime.loop_range_frames();
+    let speed_ratio = runtime.current_dsp_settings().speed_ratio.max(0.25) as f64;
 
     for frame in output.chunks_mut(output_channels) {
         if let Some((loop_start, loop_end)) = loop_range {
             if position_frames >= loop_end {
                 position_frames = loop_start;
+                runtime
+                    .dsp_engine
+                    .notify_transport_event(DspTransportEvent::LoopJump {
+                        start_seconds: loop_start / runtime.dsp_engine.source_sample_rate() as f64,
+                        end_seconds: loop_end / runtime.dsp_engine.source_sample_rate() as f64,
+                    });
             }
         }
 
@@ -404,44 +455,14 @@ where
         }
 
         for (channel, sample) in frame.iter_mut().enumerate() {
-            let source_channel = channel.min(runtime.source_channels.saturating_sub(1) as usize);
-            let value = interpolate_sample(
-                &runtime.samples,
-                runtime.source_channels as usize,
-                position_frames,
-                source_channel,
-            );
+            let value = runtime.dsp_engine.render_source_sample(position_frames, channel);
             *sample = T::from_sample(value);
         }
 
-        position_frames += runtime.step_ratio();
+        position_frames += runtime.step_ratio() * speed_ratio;
     }
 
     runtime.set_position_frames(position_frames);
-}
-
-fn interpolate_sample(
-    samples: &[f32],
-    channels: usize,
-    position_frames: f64,
-    channel: usize,
-) -> f32 {
-    let base_frame = position_frames.floor() as usize;
-    let next_frame = base_frame.saturating_add(1);
-    let frac = (position_frames - base_frame as f64) as f32;
-
-    let current = sample_at(samples, channels, base_frame, channel);
-    let next = sample_at(samples, channels, next_frame, channel);
-
-    current + (next - current) * frac
-}
-
-fn sample_at(samples: &[f32], channels: usize, frame: usize, channel: usize) -> f32 {
-    let index = frame
-        .saturating_mul(channels)
-        .saturating_add(channel.min(channels.saturating_sub(1)));
-
-    samples.get(index).copied().unwrap_or(0.0)
 }
 
 fn select_output_config(

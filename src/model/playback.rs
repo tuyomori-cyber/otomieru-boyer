@@ -1,8 +1,10 @@
+use crate::model::PlaybackDspSettings;
+
 #[derive(Debug, Clone)]
 pub struct PlaybackState {
     pub position_seconds: f64,
     pub playing: bool,
-    pub speed: f32,
+    pub dsp: PlaybackDspSettings,
     pub loop_enabled: bool,
 }
 
@@ -11,7 +13,7 @@ impl Default for PlaybackState {
         Self {
             position_seconds: 0.0,
             playing: false,
-            speed: 1.0,
+            dsp: PlaybackDspSettings::default(),
             loop_enabled: false,
         }
     }

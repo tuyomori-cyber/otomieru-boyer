@@ -57,6 +57,18 @@ impl OtomieruApp {
             }
         }
     }
+
+    fn sync_transport_state(&mut self) {
+        self.player
+            .set_loop_enabled(self.state.playback.loop_enabled && self.state.selection.normalized().is_some());
+        self.player.set_loop_range(self.state.selection.normalized());
+    }
+
+    fn sync_dsp_settings(&mut self) {
+        if !self.state.playback.playing {
+            self.player.set_dsp_settings(self.state.playback.dsp);
+        }
+    }
 }
 
 impl eframe::App for OtomieruApp {
@@ -66,9 +78,8 @@ impl eframe::App for OtomieruApp {
         if actions.open_requested {
             self.open_audio_file();
         }
-        self.player
-            .set_loop_enabled(self.state.playback.loop_enabled && self.state.selection.normalized().is_some());
-        self.player.set_loop_range(self.state.selection.normalized());
+        self.sync_transport_state();
+        self.sync_dsp_settings();
         if actions.seek_to_start_requested {
             self.player.seek_to_start();
             self.state.playback.position_seconds = 0.0;
@@ -100,9 +111,8 @@ impl eframe::App for OtomieruApp {
             ui.vertical(|ui| {
                 ui.add_space(4.0);
                 let _timeline_actions = timeline::show(ui, &mut self.state, 108.0);
-                self.player
-                    .set_loop_enabled(self.state.playback.loop_enabled && self.state.selection.normalized().is_some());
-                self.player.set_loop_range(self.state.selection.normalized());
+                self.sync_transport_state();
+                self.sync_dsp_settings();
                 ui.add_space(4.0);
 
                 ui.horizontal(|ui| {

@@ -17,6 +17,8 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
         ui.add_space(4.0);
 
         ui.horizontal_wrapped(|ui| {
+            let dsp_controls_enabled = state.track.is_some() && !state.playback.playing;
+
             if ui.button("Open").clicked() {
                 actions.open_requested = true;
             }
@@ -49,17 +51,35 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
 
             ui.separator();
 
-            egui::ComboBox::from_label("Speed")
-                .selected_text(format!("{:.2}x", state.playback.speed))
-                .show_ui(ui, |ui| {
-                    for speed in [0.50_f32, 0.75, 1.00] {
-                        ui.selectable_value(
-                            &mut state.playback.speed,
-                            speed,
-                            format!("{speed:.2}x"),
-                        );
-                    }
-                });
+            ui.add_enabled_ui(dsp_controls_enabled, |ui| {
+                egui::ComboBox::from_label("Speed")
+                    .selected_text(format!("{:.2}x", state.playback.dsp.speed_ratio))
+                    .show_ui(ui, |ui| {
+                        for speed in [0.50_f32, 0.75, 1.00, 1.25, 1.50] {
+                            ui.selectable_value(
+                                &mut state.playback.dsp.speed_ratio,
+                                speed,
+                                format!("{speed:.2}x"),
+                            );
+                        }
+                    });
+            });
+
+            ui.separator();
+
+            ui.add_enabled_ui(dsp_controls_enabled, |ui| {
+                egui::ComboBox::from_label("Pitch")
+                    .selected_text(format_pitch_label(state.playback.dsp.pitch_shift_semitones))
+                    .show_ui(ui, |ui| {
+                        for semitones in [-12_i32, 0, 12] {
+                            ui.selectable_value(
+                                &mut state.playback.dsp.pitch_shift_semitones,
+                                semitones,
+                                format_pitch_label(semitones),
+                            );
+                        }
+                    });
+            });
 
             ui.separator();
 
@@ -100,4 +120,13 @@ fn format_mm_ss(seconds: f64) -> String {
     let minutes = total_seconds / 60;
     let secs = total_seconds % 60;
     format!("{minutes:02}:{secs:02}")
+}
+
+fn format_pitch_label(semitones: i32) -> String {
+    match semitones {
+        -12 => "-1 oct".to_owned(),
+        12 => "+1 oct".to_owned(),
+        0 => "0 st".to_owned(),
+        _ => format!("{semitones:+} st"),
+    }
 }

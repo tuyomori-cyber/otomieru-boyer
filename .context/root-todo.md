@@ -1,175 +1,84 @@
-編集
-
 # Auto ToDo Root
 
 ## テーマ
 
-- `otomieru-boyer` のMVPを土台に、再生DSPとスペクトラム表示を次段階へ拡張する
-- 再生速度変更、オクターブ単位のピッチ変更、スペクトラム表示ズーム、イコライザを破綻なく追加できる構成へ整理する
+- `otomieru-boyer` の DSP 再生処理について、Transport イベントと Processor の状態管理を整え、`BypassTimeStretchProcessor` を実際の `TimeStretchProcessor` に置き換える
 
-## 現在地
+## 目的
 
-- MVPの音声再生、停止、ポーズ、先頭戻し、Open は実装済み
-- STFT事前計算と静止スペクトログラム表示は実装済み
-- サーモグラフィー風表示と `Heat` 調整は実装済み
-- ピアノロール表示とスペクトラムクリックでの基準音再生は実装済み
-- 長押し中の基準音継続再生と上下ドラッグでの音程追従は実装済み
-- ループ範囲作成、ループ再生、端点の個別微調整は実装済み
-- スペクトラム表示はページ番号中心の設計から、`view_start_seconds` を持つ固定幅ビューポート方式へ移行済み
-- 停止中は下部バーのクリック/ドラッグで表示範囲だけを移動できる
-- 再生中は再生位置が表示右端に達したときだけ、1画面ぶん表示範囲を更新する
-- 再生位置と表示開始位置は分離済みで、表示中の画面に再生位置が存在しない状態も許容する
-- `cargo check` は通過している
-- `.context/root-todo.md` と `.context/session.md` はMVP完了後のDSP設計フェーズ向けに整理済み
-- 次は `Playback DSP Settings` とDSPチェーンの内部構成を具体化する段階
+- `AudioPlayer` から DSP 処理までの Transport イベント連携を整理する
+- `Seek` や `LoopJump` などの状態変化時に DSP 内部状態を安全に reset できる構成にする
+- 最終的に time stretch の実処理を `Processor` として組み込む
 
-## 完了済みMVP
+## 前提認識
 
-- [x] 音声ファイルを開いてデコードし、Trackとして読み込める
-- [x] 通常速度で安定して再生できる
-- [x] スペースキーで再生/ポーズできる
-- [x] 先頭へ戻る、停止ができる
-- [x] スペクトラム上に再生位置の縦線を表示できる
-- [x] 停止中にスペクトラム上のクリックでシークできる
-- [x] 再生中は縦線のみ高頻度更新し、重いUI更新を避ける
-- [x] スペクトラム下部の全体バーから表示範囲を移動できる
-- [x] ループ範囲を作成し、ループ再生できる
-- [x] ループ範囲端点を個別に調整できる
-- [x] ページまたぎ問題に備えて、表示範囲を秒ベースのビューポートとして扱える
+- `AudioPlayer -> DspEngine -> ProcessorGraph -> Processor` の責務分離で進めている
+- `DspTransportEvent` に `Start / Stop / Seek / LoopJump` を定義済み
+- `AudioPlayer` から `DspEngine`、`ProcessorGraph` へ Transport イベントを通知する経路を実装済み
+- `ProcessorGraph` は Transport イベントを受けて Processor の状態を reset できる
+- `BypassTimeStretchProcessor` は実処理の差し込み口となる `PreparedTimeStretchProcessor` に置き換わった経緯があるが、現在の `timestretch.rs` は原因切り分けのためにかなり単純化され、`PreparedTimeStretchProcessor` 自体は実質パススルー状態になっている
+- `TimeStretchProcessor` / `PitchShiftProcessor` を実サンプル経路へ接続するためのインターフェース拡張は実施済み
+- `DspEngine::render_sample()` を `ProcessorGraph` 経由にする変更は実施済み
+- `player.rs` には `speed_ratio` を再生位置の進行量へ掛ける処理が残っている
+- `app/mod.rs` では DSP 設定の反映が `!playing` のときだけ `player.set_dsp_settings(...)` される状態になっている
+- 現状は「デフォルト音高まで壊れる」「速度も変わらない」という症状に対して、`timestretch` 本体だけでは説明しづらく、`DspEngine` / `player` の再生経路または設定反映経路をさらに単純化して切り分ける段階
+- `PreparedTimeStretchProcessor` に内部状態、窓付き合成、`speed_ratio` 進行、簡易 WSOLA 寄りの重ね位置探索まで実装した段階はあったが、現在は原因切り分けのために簡素化されており、実処理として再構成する必要がある
+- 原因切り分けのため、現在は再生経路を最小構成へ戻し、実サンプル取得を DSP グラフ経由から `DspEngine::render_source_sample()` による元音源の直接補間へ変更している
+- 現在の復旧状態では `speed_ratio` のみを再生進行量へ直接反映し、time stretch / pitch shift の DSP 処理は再生経路から外している
+- この最小構成への変更後、`cargo check` は通過している
 
-## 次フェーズの設計方針
+## MVP ゴール
 
-- `Transport`
-  - 再生、停止、ポーズ、シーク、ループ
-- `Viewport`
-  - `view_start_seconds`、`view_duration_seconds`、表示追従、将来のズーム
-- `Playback DSP`
-  - 速度変更、ピッチ変更、将来のEQ
-- `Analysis/Display`
-  - STFT、スペクトラム表示、将来の表示ズーム
-
-## 次フェーズの目標
-
-- 再生速度変更は音程維持で動作する
-- オクターブ変更は再生時間維持で動作する
-- 再生速度変更とピッチ変更を同時適用できる
-- イコライザを同じDSP基盤へ追加できる
-- スペクトラム表示ズームをPlayback DSPとは分離して追加できる
-
-## 優先ToDo
-
-1. **再生DSP設計**
-
-- [ ] `Playback DSP Settings` の具体的な構造を定義する
-- [ ] `PlaybackState` に速度とピッチ変更を独立して保持する状態設計を決める
-- [ ] `speed_ratio` と `pitch_shift_semitones` を独立パラメータとして整理する
-- [ ] `EQ` を後から追加できる設定構造にする
-- [ ] `source PCM -> DSP chain -> output` のデータフローを決める
-- [ ] `Transport` / `Viewport` / `Playback DSP` / `Analysis/Display` の責務境界を具体化する
-- [ ] audio callback を軽量に保つため、DSPワーカー方式を含めた処理責務を整理する
-
-1. **速度変更 / ピッチ変更**
-
-- [ ] 再生速度変更は時間方向のみを変え、音程を維持する方式を決める
-- [ ] オクターブ変更は音程のみを変え、長さを維持する方式を決める
-- [ ] 速度変更とピッチ変更を同時適用する順序と責務分離を決める
-- [ ] `audio/timestretch.rs` を本実装にどう接続するか決める
-- [ ] UI上の `Speed` と `Pitch` の仕様を整理する
-- [ ] 速度変更とピッチ変更を組み合わせるDSP入口を1本化する構成を決める
-
-1. **スペクトラム / Viewport**
-
-- [ ] 1画面の表示秒数をどう決めるか整理する
-- [ ] ループ中に表示追従とループ全体可視のどちらを優先するか決める
-- [ ] スペクトラム表示ズームの仕様を整理する
-- [ ] ズーム時の時間軸、周波数軸、描画密度の扱いを整理する
-
-1. **イコライザ**
-
-- [ ] Playback DSPにEQをどう差し込むか整理する
-- [ ] EQの操作単位を決める
-- [ ] スペクトラム表示との関係を整理する
-
-1. **UI調整**
-
-- [ ] ループ端点ハンドルの操作感を必要に応じて微調整する
-- [ ] `Heat` の実機での見やすい設定を確認する
+- Transport イベントに応じて DSP の状態を適切に初期化できる
+- `BypassTimeStretchProcessor` を実際の `TimeStretchProcessor` に置き換える
+- time stretch の内部状態と処理入口を実装する
+- `speed_ratio` を解釈した速度変更の実処理を time stretch 側へ組み込む
 
 ## 非ゴール
 
-- 簡易補間だけで速度変更・ピッチ変更の最終品質を済ませること
-- オクターブ変更を再生速度変更の特殊ケースとして実装すること
-- 表示ズームと再生DSPを同じ責務として混在させること
-- 再び再生位置と表示位置を密結合に戻すこと
-- [x] 再生速度とピッチ変更を独立した2軸として設計する方針を整理する
-- [x] 速度変更を `speed_ratio`、ピッチ変更を `pitch_shift_semitones` のような別パラメータとして扱う方針を整理する
-- [x] 1オクターブ上げ・下げを `+12 / -12 semitone` として扱い、速度変更とは独立させる方針を整理する
-- [x] 速度変更とピッチ変更を組み合わせて再生することを前提とする
-- [x] 再生系を概念上 `Transport` / `Time Stretch` / `Pitch Shift` に分離する方針を整理する
-- [x] UI仕様、内部パラメータ仕様、DSPパイプラインを実装前に整理する方針とする
-- [x] 速度変更は音程維持、オクターブ変更は長さ維持を目標とする方針を整理する
-- [x] 簡易補間ではなくTime Stretch / Pitch Shiftを前提とする方針を整理する
-- [x] `Playback DSP Settings` とDSPチェーンを独立した構成として検討する
-- [x] audio callbackを軽量に保ち、DSP処理を分離する方針を整理する
-- [ ] `PlaybackState` に速度とピッチ変更を独立して保持する具体的な状態設計を決める
-- [ ] `Playback DSP Settings` の具体的な構造を決める
-- [ ] UIで `Speed` と `Pitch` を独立して操作できる仕様を決める
-- [ ] 速度変更とピッチ変更を組み合わせるDSP入口を1本化する構成を決める
-- [ ] DSPワーカーとaudio callback間のバッファ受け渡し方式を決める
-- [ ] `speed` を実際の音声再生処理へ接続する
-- [ ] 1オクターブ上げ・下げを実際の音声再生処理へ接続する
-- [ ] 速度変更とピッチ変更を同時適用して再生する
-- [ ] `0.75x`、`1.0x`、`1.25x` と `-12 / 0 / +12 semitone` の組み合わせを実機確認する
-- [ ] 必要になった場合のみ、速度変更時のピッチ保持品質を別途詰める
+- 現時点で未確定の高度な DSP アルゴリズムや最適化を先行して実装すること
+- Transport イベント連携とは無関係な再生機能を同時に変更すること
 
-1. **STFT・静止スペクトログラム**
+## 段階的 ToDo
 
-- [x] `src/analysis/stft.rs` のSTFT処理を実装する
-- [x] `src/analysis/spectrum.rs` の表示用スペクトログラムデータ構造を実装する
-- [x] 音声読み込み後にSTFTを事前計算する
-- [x] まず1ページ分の静止スペクトログラムを実際に描画する
-- [x] 既存のページ分割UIと静止スペクトログラムを接続する
-- [ ] ピアノ鍵盤との縦軸一致へ進む
-
-1. **Playback DSP・将来拡張**
-
-- [ ] `source PCM -> DSP chain -> output` と `source PCM -> analysis/display cache -> spectrogram` の責務を明確に分離する
-- [ ] `Transport`、`Viewport`、`Playback DSP`、`Analysis/Display` の内部モジュール境界を具体化する
-- [ ] EQをPlayback DSPチェーンへ追加できる設定構造を設計する
-- [ ] 速度変更・ピッチ変更・EQを同じDSP基盤上で扱える構成を決める
-- [ ] スペクトラム表示ズームをDSPとは独立したViewport / Analysis/Display側で実装できる構成を決める
+- [x] `DspTransportEvent` を追加し、`Start / Stop / Seek / LoopJump` のイベント境界を型で明示する
+- [x] `AudioPlayer -> DspEngine -> ProcessorGraph` のイベント通知経路を実装する
+- [x] `ProcessorGraph` が Transport イベントで reset できる構成を実装する
+- [x] `cargo check` でビルド成立を確認する
+- [x] `TimeStretchProcessor` / `PitchShiftProcessor` を実サンプル経路へ接続できるインターフェースに拡張する
+- [x] `DspEngine::render_sample()` を `ProcessorGraph` 経由の本番形へ変更する
+- [x] `PreparedTimeStretchProcessor` に `speed_ratio` を扱う内部状態と処理計画を追加する
+- [x] `speed_ratio` と Transport イベントに応じて再同期できる time stretch の骨格を実装する
+- [x] `SourceAudioView` を追加し、`TimeStretchProcessor` がソース音全体を参照できるようにする
+- [x] `DspEngine::render_sample()` を `ProcessorGraph -> TimeStretchProcessor -> PitchShiftProcessor` の経路へ変更する
+- [x] 現在の実サンプル経路で `1.00x / 0 st` の通常再生を確認し、既存の出音が壊れていないことを確認する
+- [x] `PreparedTimeStretchProcessor` に内部状態と窓付き合成の骨格を実装する
+- [x] 再生ヘッド進行へ `speed_ratio` を反映する
+- [x] `PreparedTimeStretchProcessor` に簡易 WSOLA 寄りの重ね位置探索を追加し、非1.00時の音高ズレを減らす位置合わせを実装する
+- [x] 再生経路を最小構成へ戻し、実サンプル取得を DSP グラフ経由から直接補間へ変更する
+- [x] `speed_ratio` のみを再生進行量へ直接反映する復旧状態へ変更する
+- [x] 復旧状態で `cargo check` が通過することを確認する
+- [ ] 最小構成で `1.00x / 0.50x / 1.50x` の通常音高と速度変化を実機確認する
+- [ ] 復旧確認後、proper な time stretch / pitch shift を最小構成から別経路で再実装する
+- [ ] 実機で `1.00x / 0.75x / 1.25x` の音高一致とノイズ量を確認する
+- [ ] 必要に応じて search radius / overlap / hop / 窓設計を調整する
+- [ ] Transport イベントによる reset が実処理でも成立することを確認する
 
 ## 未解決論点
 
-- 1画面の表示秒数をどのように決めるか
-- `SpectrogramPaging` と関連するページ計算をどの範囲まで退役させるか
-- 停止中の下部バーを任意の `view_start_seconds` へドラッグして移動する操作の実機確認
-- 表示範囲外に再生位置がある場合の縦線非表示を含め、再生位置と表示範囲が非連動であることの実機確認
-- 再生中に再生位置が表示範囲の右端へ達した時だけ1画面分進む追従条件の実機確認
-- 下部バーのドラッグ操作や追従条件を必要に応じて微調整する
-- サーモグラフィー風スペクトログラムの `Heat` 値をどこに設定すると強弱が最も見やすいか
-- 実機でのスペクトログラム表示密度や色の出方の確認・調整
-- 静止スペクトログラムとピアノ鍵盤の縦軸を一致させる具体的な実装
-- スペクトログラム上のクリック音確認
-- 三角ハンドルの掴みやすさと個別ドラッグ操作の触り心地
-- 三角ハンドルのサイズやヒット幅を調整する必要があるか
-- ページまたぎループ時に表示範囲を自動切り替えするか
-- ループ中は現在位置追従よりループ範囲全体の可視性を優先するか
-- 表示範囲とループ範囲が一致しない場合でも、再生位置・ループ範囲・シークを秒ベースで独立して扱う具体的な構成
-- 再生速度とピッチ変更を独立して保持する状態構造をどこに置くか
-- `Playback DSP Settings` をどの層で保持・更新するか
-- `speed_ratio` と `pitch_shift_semitones` をDSP処理へ渡す具体的な経路
-- Time Stretch と Pitch Shift の具体的な処理順序
-- 速度変更時にピッチを維持する具体的なDSP方式と品質をMVP以降でどこまで求めるか
-- 1オクターブ上げ・下げで再生時間を維持する具体的なDSP方式
-- 速度変更とピッチ変更を同時適用した場合の処理負荷と実機上の安定性
-- DSPワーカーとaudio callback間のバッファリング・レイテンシ・アンダーラン対策
-- EQをDSPチェーンへ追加する際の設定構造と処理位置
-- スペクトラム表示ズーム時のViewport / Analysis/Display側の具体的なデータ・描画構成
-- `preserve_pitch` を独立した設定として持つ必要があるか
+- 現在の `timestretch.rs` は実質パススルー状態であり、time stretch 実処理はまだ成立していない
+- `player.rs` の `speed_ratio` は現在、最小構成で再生進行量へ直接反映する形に戻している
+- `app/mod.rs` の DSP 設定反映が停止中限定のため、設定反映経路が速度変更未反映に関係しているか未確認
+- 最小構成で通常再生の音高と `speed_ratio` による速度変更が正しく戻るか未確認
+- 実機での `1.00x / 0.50x / 1.50x` の通常音高と速度変化は未確認
+- proper な time stretch / pitch shift は、復旧確認後に別経路で再実装する必要がある
+- 実機での `1.00x / 0.75x / 1.25x` の音高一致とノイズ量は未確認
+- 簡易 WSOLA 寄りの重ね位置探索による改善は、現在の簡素化前の実装に対するものであり、現状コードでの有効性は未確認
+- search radius / overlap / hop / 窓設計は実機確認後に調整が必要になる可能性がある
+- 実処理へ再移行した後の Transport イベントによる reset の挙動確認が未実施
 
 ## 次の一手
 
-1. `Playback DSP Settings` と `PlaybackState` の具体的な状態構造、および `Transport` / `Viewport` / `DSP` の責務境界を固める
-2. audio callbackを軽量に保つ前提で、DSPワーカーとバッファ受け渡しを含むDSPチェーンの内部構成を決める
-3. `speed_ratio` と `pitch_shift_semitones` を使ったTime Stretch / Pitch Shiftの最小実装方針を決め、両方を同時適用できる再生経路へ進める
+1. 最小構成で `1.00x / 0.50x / 1.50x` の通常音高と速度変化を実機確認する
+2. 復旧確認後、proper な time stretch / pitch shift を最小構成から別経路で再実装する
+3. 実処理への再移行後、Transport イベントによる reset が成立することを確認する
