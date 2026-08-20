@@ -90,9 +90,11 @@ impl eframe::App for OtomieruApp {
             self.state.playback.position_seconds = 0.0;
         }
 
+        let previous_position_seconds = self.state.playback.position_seconds;
         let snapshot = self.player.snapshot();
         self.state.playback.playing = snapshot.transport == TransportState::Playing;
         self.state.playback.position_seconds = snapshot.position_seconds;
+        self.state.follow_playhead_if_needed(previous_position_seconds);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical(|ui| {
@@ -110,9 +112,8 @@ impl eframe::App for OtomieruApp {
                         self.player.seek_to_seconds(seconds);
                         self.state.playback.position_seconds = seconds;
                     }
-                    if let Some(page_seconds) = spectrogram_actions.page_seek_seconds {
-                        self.player.seek_to_seconds(page_seconds);
-                        self.state.playback.position_seconds = page_seconds;
+                    if let Some(view_start_seconds) = spectrogram_actions.view_start_seconds {
+                        self.state.set_view_start_seconds(view_start_seconds);
                     }
                     if let Some(midi_note) = spectrogram_actions.preview_midi_note {
                         if let Some(preview_tone_player) = &self.preview_tone_player {

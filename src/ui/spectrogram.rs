@@ -5,7 +5,7 @@ use crate::app::state::AppState;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SpectrogramActions {
     pub seek_seconds: Option<f64>,
-    pub page_seek_seconds: Option<f64>,
+    pub view_start_seconds: Option<f64>,
     pub preview_midi_note: Option<u8>,
     pub stop_preview: bool,
 }
@@ -24,15 +24,16 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
         egui::StrokeKind::Inside,
     );
 
-    let page_start = state.current_page_start_seconds();
-    let page_end = state.current_page_end_seconds();
-    let paging = state.spectrogram_paging();
-    let current_page_index = state.current_page_index();
-    let page_duration = (page_end - page_start).max(0.001);
-    let normalized = ((state.playback.position_seconds - page_start) / page_duration).clamp(0.0, 1.0);
+    let view_start = state.current_view_start_seconds();
+    let view_end = state.current_view_end_seconds();
+    let view = state.spectrogram_view();
+    let view_duration = (view_end - view_start).max(0.001);
+    let playhead_visible = state.playback.position_seconds >= view_start
+        && state.playback.position_seconds <= view_end;
+    let normalized = ((state.playback.position_seconds - view_start) / view_duration).clamp(0.0, 1.0);
     let current_x = egui::lerp(rect.left()..=rect.right(), normalized as f32);
 
-    draw_spectrogram_body(&painter, rect, state, page_start, page_end);
+    draw_spectrogram_body(&painter, rect, state, view_start, view_end);
 
     let page_bar_height = 16.0;
     let page_bar_margin = 14.0;
@@ -41,13 +42,15 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
         egui::pos2(rect.right() - page_bar_margin, rect.bottom() - 28.0 + page_bar_height),
     );
 
-    painter.line_segment(
-        [
-            egui::pos2(current_x, rect.top()),
-            egui::pos2(current_x, rect.bottom()),
-        ],
-        Stroke::new(2.0, Color32::from_rgb(255, 209, 102)),
-    );
+    if playhead_visible {
+        painter.line_segment(
+            [
+                egui::pos2(current_x, rect.top()),
+                egui::pos2(current_x, rect.bottom()),
+            ],
+            Stroke::new(2.0, Color32::from_rgb(255, 209, 102)),
+        );
+    }
 
     painter.rect_filled(
         page_bar_rect,
@@ -61,24 +64,31 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
         egui::StrokeKind::Inside,
     );
 
-    let current_page_left = egui::lerp(
-        page_bar_rect.left()..=page_bar_rect.right(),
-        current_page_index as f32 / paging.page_count.max(1) as f32,
-    );
-    let current_page_right = egui::lerp(
-        page_bar_rect.left()..=page_bar_rect.right(),
-        (current_page_index + 1) as f32 / paging.page_count.max(1) as f32,
-    );
-    let current_page_rect = egui::Rect::from_min_max(
-        egui::pos2(current_page_left, page_bar_rect.top()),
-        egui::pos2(current_page_right.max(current_page_left + 2.0), page_bar_rect.bottom()),
-    );
-    painter.rect_filled(current_page_rect, 4.0, Color32::from_rgb(90, 168, 204));
+    let duration = state
+        .track
+        .as_ref()
+        .map(|track| track.duration_seconds)
+        .unwrap_or(0.0)
+        .max(0.001);
 
-    for page in 1..paging.page_count {
+    let current_view_left = egui::lerp(
+        page_bar_rect.left()..=page_bar_rect.right(),
+        (view_start / duration).clamp(0.0, 1.0) as f32,
+    );
+    let current_view_right = egui::lerp(
+        page_bar_rect.left()..=page_bar_rect.right(),
+        (view_end / duration).clamp(0.0, 1.0) as f32,
+    );
+    let current_view_rect = egui::Rect::from_min_max(
+        egui::pos2(current_view_left, page_bar_rect.top()),
+        egui::pos2(current_view_right.max(current_view_left + 2.0), page_bar_rect.bottom()),
+    );
+    painter.rect_filled(current_view_rect, 4.0, Color32::from_rgb(90, 168, 204));
+
+    for segment in 1..view.total_segments {
         let x = egui::lerp(
             page_bar_rect.left()..=page_bar_rect.right(),
-            page as f32 / paging.page_count as f32,
+            segment as f32 / view.total_segments as f32,
         );
         painter.line_segment(
             [egui::pos2(x, page_bar_rect.top()), egui::pos2(x, page_bar_rect.bottom())],
@@ -86,24 +96,22 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
         );
     }
 
+    let playhead_bar_x = egui::lerp(
+        page_bar_rect.left()..=page_bar_rect.right(),
+        (state.playback.position_seconds / duration).clamp(0.0, 1.0) as f32,
+    );
     painter.line_segment(
         [
-            egui::pos2(
-                current_x.clamp(page_bar_rect.left(), page_bar_rect.right()),
-                page_bar_rect.top(),
-            ),
-            egui::pos2(
-                current_x.clamp(page_bar_rect.left(), page_bar_rect.right()),
-                page_bar_rect.bottom(),
-            ),
+            egui::pos2(playhead_bar_x, page_bar_rect.top()),
+            egui::pos2(playhead_bar_x, page_bar_rect.bottom()),
         ],
         Stroke::new(2.0, Color32::from_rgb(255, 209, 102)),
     );
 
     let overlay = if state.playback.playing {
-        "再生中はページ送りのみ / 縦線追従"
+        "再生中は1画面ぶん更新 / 縦線追従"
     } else {
-        "停止中はクリックでシーク"
+        "停止中は表示範囲だけ移動"
     };
 
     painter.text(
@@ -118,11 +126,9 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
         rect.left_top() + egui::vec2(16.0, 42.0),
         Align2::LEFT_TOP,
         format!(
-            "Page {}/{} | {:.0} - {:.0} sec\n{}",
-            current_page_index + 1,
-            paging.page_count,
-            page_start,
-            page_end,
+            "View | {:.0} - {:.0} sec\n{}",
+            view_start,
+            view_end,
             overlay
         ),
         FontId::proportional(16.0),
@@ -132,14 +138,14 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
     painter.text(
         page_bar_rect.left_bottom() + egui::vec2(0.0, 20.0),
         Align2::LEFT_BOTTOM,
-        "Page 1",
+        "0s",
         FontId::proportional(13.0),
         Color32::from_rgb(165, 188, 204),
     );
     painter.text(
         page_bar_rect.right_bottom() + egui::vec2(0.0, 20.0),
         Align2::RIGHT_BOTTOM,
-        format!("Page {}", paging.page_count),
+        format!("{:.0}s", duration),
         FontId::proportional(13.0),
         Color32::from_rgb(165, 188, 204),
     );
@@ -148,15 +154,13 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
     if let Some(pointer_pos) = response.interact_pointer_pos() {
         if page_bar_rect.contains(pointer_pos) && !state.playback.playing && response.clicked() {
             let t = ((pointer_pos.x - page_bar_rect.left()) / page_bar_rect.width())
-                .clamp(0.0, 0.999_999) as f64;
-            let page_index = (t * paging.page_count as f64).floor() as usize;
-            let page_seek = page_index.min(paging.page_count.saturating_sub(1)) as f64
-                * paging.page_duration_seconds;
-            actions.page_seek_seconds = Some(page_seek);
+                .clamp(0.0, 1.0) as f64;
+            let max_view_start = (duration - view.duration_seconds).max(0.0);
+            actions.view_start_seconds = Some(max_view_start * t);
         } else if content_rect.contains(pointer_pos) {
             if !state.playback.playing && response.clicked() {
                 let t = ((pointer_pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;
-                actions.seek_seconds = Some(page_start + page_duration * t);
+                actions.seek_seconds = Some(view_start + view_duration * t);
             }
 
             let pointer_down = ui.input(|input| input.pointer.primary_down());
@@ -187,8 +191,8 @@ fn draw_spectrogram_body(
     painter: &egui::Painter,
     rect: egui::Rect,
     state: &AppState,
-    page_start: f64,
-    page_end: f64,
+    view_start: f64,
+    view_end: f64,
 ) {
     let Some(track) = &state.track else {
         draw_placeholder_grid(painter, rect);
@@ -208,9 +212,9 @@ fn draw_spectrogram_body(
         rect.right_bottom() - egui::vec2(0.0, 40.0),
     );
 
-    let start_frame = ((page_start / spectrogram.frame_duration_seconds).floor() as usize)
+    let start_frame = ((view_start / spectrogram.frame_duration_seconds).floor() as usize)
         .min(spectrogram.frames.saturating_sub(1));
-    let end_frame = ((page_end / spectrogram.frame_duration_seconds).ceil() as usize)
+    let end_frame = ((view_end / spectrogram.frame_duration_seconds).ceil() as usize)
         .clamp(start_frame + 1, spectrogram.frames);
     let visible_frames = end_frame.saturating_sub(start_frame).max(1);
 
@@ -253,7 +257,7 @@ fn draw_spectrogram_body(
     }
 
     draw_pitch_guides(painter, content_rect, spectrogram.pitches);
-    draw_loop_markers(painter, content_rect, state, page_start, page_end);
+    draw_loop_markers(painter, content_rect, state, view_start, view_end);
 }
 
 fn draw_placeholder_grid(painter: &egui::Painter, rect: egui::Rect) {

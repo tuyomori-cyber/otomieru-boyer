@@ -1,14 +1,16 @@
 # Current State
 
-Updated: 1787186278
+Updated: 1787186594
 
 Now:
-- Done: 秒ベース表示開始位置への変更影響を調査
-- Done: 変更中心は `AppState` と `spectrogram/timeline` UI 層で、再生エンジン影響は小さいと整理
+- Done: ページ基準の表示を秒ベースのビューポート基準へ変更
+- Done: 停止中の下部バー操作を「再生シーク」から「表示範囲移動」へ変更
+- Done: 再生中は右端到達時のみ1画面ぶん表示更新する追従を実装
+- Done: `cargo check` でビルド成立を確認
 
 Next:
-- `page` 概念を `view_start_seconds` / `view_duration_seconds` へ置き換える設計案を具体化
-- 全体バーを「ページ選択」から「表示開始位置指定」へ再定義
+- 実機で表示範囲移動と再生位置非連動の挙動を確認
+- 必要なら下部バーのドラッグ操作や追従条件を微調整
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.

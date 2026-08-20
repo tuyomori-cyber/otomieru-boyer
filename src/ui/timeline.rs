@@ -23,9 +23,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, left_offset: f32) -> Timeli
     let desired_size = Vec2::new(ui.available_width(), 34.0);
     let (full_rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
     let painter = ui.painter_at(full_rect);
-    let page_start = state.current_page_start_seconds();
-    let page_end = state.current_page_end_seconds();
-    let page_duration = (page_end - page_start).max(0.001);
+    let view_start = state.current_view_start_seconds();
+    let view_end = state.current_view_end_seconds();
+    let view_duration = (view_end - view_start).max(0.001);
 
     let timeline_rect = egui::Rect::from_min_max(
         egui::pos2(full_rect.left() + left_offset, full_rect.top() + 8.0),
@@ -56,9 +56,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, left_offset: f32) -> Timeli
         .data(|data| data.get_temp::<TimelineDragMode>(drag_id));
 
     if let Some((start, end)) = state.selection.normalized() {
-        if start >= page_start && end <= page_end {
-            let start_x = time_to_x(start, page_start, page_duration, timeline_rect);
-            let end_x = time_to_x(end, page_start, page_duration, timeline_rect);
+        if start >= view_start && end <= view_end {
+            let start_x = time_to_x(start, view_start, view_duration, timeline_rect);
+            let end_x = time_to_x(end, view_start, view_duration, timeline_rect);
             let selection_rect = egui::Rect::from_min_max(
                 egui::pos2(start_x, timeline_rect.top()),
                 egui::pos2(end_x, timeline_rect.bottom()),
@@ -75,13 +75,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, left_offset: f32) -> Timeli
 
     if response.drag_started() {
         if let Some(pointer_pos) = response.interact_pointer_pos() {
-            drag_mode = Some(pick_drag_mode(pointer_pos.x, state, timeline_rect, page_start, page_duration));
+            drag_mode = Some(pick_drag_mode(pointer_pos.x, state, timeline_rect, view_start, view_duration));
             ui.ctx().data_mut(|data| {
                 if let Some(mode) = drag_mode {
                     data.insert_temp(drag_id, mode);
                 }
             });
-            let seconds = x_to_time(pointer_pos.x, page_start, page_duration, timeline_rect);
+            let seconds = x_to_time(pointer_pos.x, view_start, view_duration, timeline_rect);
             match drag_mode.unwrap_or(TimelineDragMode::Create) {
                 TimelineDragMode::Create => state.selection.set_range(seconds, seconds),
                 TimelineDragMode::AdjustStart => state.selection.start_seconds = Some(seconds),
@@ -93,7 +93,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, left_offset: f32) -> Timeli
 
     if response.dragged() {
         if let Some(pointer_pos) = response.interact_pointer_pos() {
-            let seconds = x_to_time(pointer_pos.x, page_start, page_duration, timeline_rect);
+            let seconds = x_to_time(pointer_pos.x, view_start, view_duration, timeline_rect);
             match drag_mode.unwrap_or(TimelineDragMode::Create) {
                 TimelineDragMode::Create => {
                     let start = state.selection.start_seconds.unwrap_or(seconds);
@@ -129,7 +129,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, left_offset: f32) -> Timeli
     painter.text(
         timeline_rect.right_center() + egui::vec2(-6.0, 0.0),
         Align2::RIGHT_CENTER,
-        format!("{:.0} - {:.0}s", page_start, page_end),
+        format!("{:.0} - {:.0}s", view_start, view_end),
         FontId::proportional(12.0),
         Color32::from_rgb(176, 192, 205),
     );
