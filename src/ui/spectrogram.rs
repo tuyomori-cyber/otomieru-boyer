@@ -152,11 +152,14 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
 
     let content_rect = egui::Rect::from_min_max(rect.left_top(), rect.right_bottom() - egui::vec2(0.0, 40.0));
     if let Some(pointer_pos) = response.interact_pointer_pos() {
-        if page_bar_rect.contains(pointer_pos) && !state.playback.playing && response.clicked() {
-            let t = ((pointer_pos.x - page_bar_rect.left()) / page_bar_rect.width())
-                .clamp(0.0, 1.0) as f64;
-            let max_view_start = (duration - view.duration_seconds).max(0.0);
-            actions.view_start_seconds = Some(max_view_start * t);
+        if page_bar_rect.contains(pointer_pos) && !state.playback.playing {
+            let pointer_down = ui.input(|input| input.pointer.primary_down());
+            if response.clicked() || pointer_down {
+                let t = ((pointer_pos.x - page_bar_rect.left()) / page_bar_rect.width())
+                    .clamp(0.0, 1.0) as f64;
+                let max_view_start = (duration - view.duration_seconds).max(0.0);
+                actions.view_start_seconds = Some(max_view_start * t);
+            }
         } else if content_rect.contains(pointer_pos) {
             if !state.playback.playing && response.clicked() {
                 let t = ((pointer_pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;

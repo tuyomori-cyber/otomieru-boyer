@@ -2,9 +2,9 @@ use eframe::egui::{self, Align2, Color32, FontId, Sense, Stroke, Vec2};
 
 use crate::app::state::AppState;
 
-const LOOP_HANDLE_HIT_RADIUS: f32 = 10.0;
+const LOOP_HANDLE_HIT_RADIUS: f32 = 18.0;
 const LOOP_TIMELINE_DRAG_ID: &str = "loop-timeline-drag";
-const LOOP_HANDLE_SIZE: Vec2 = Vec2::new(12.0, 14.0);
+const LOOP_HANDLE_SIZE: Vec2 = Vec2::new(18.0, 20.0);
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TimelineActions {
