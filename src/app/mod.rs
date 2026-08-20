@@ -114,12 +114,6 @@ impl eframe::App for OtomieruApp {
                         self.player.seek_to_seconds(page_seconds);
                         self.state.playback.position_seconds = page_seconds;
                     }
-                    if let Some(selection) = spectrogram_actions.updated_selection {
-                        self.state.selection = selection;
-                        self.player
-                            .set_loop_enabled(self.state.playback.loop_enabled && self.state.selection.normalized().is_some());
-                        self.player.set_loop_range(self.state.selection.normalized());
-                    }
                     if let Some(midi_note) = spectrogram_actions.preview_midi_note {
                         if let Some(preview_tone_player) = &self.preview_tone_player {
                             preview_tone_player.update_preview(PreviewToneRequest { midi_note });

@@ -1,10 +1,6 @@
 use eframe::egui::{self, Align2, Color32, FontId, Sense, Stroke, Vec2};
 
 use crate::app::state::AppState;
-use crate::model::Selection;
-
-const LOOP_MARKER_HIT_RADIUS: f32 = 8.0;
-const LOOP_DRAG_TARGET_ID: &str = "loop-drag-target";
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SpectrogramActions {
@@ -12,13 +8,6 @@ pub struct SpectrogramActions {
     pub page_seek_seconds: Option<f64>,
     pub preview_midi_note: Option<u8>,
     pub stop_preview: bool,
-    pub updated_selection: Option<Selection>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LoopDragTarget {
-    Start,
-    End,
 }
 
 pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
@@ -156,39 +145,6 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
     );
 
     let content_rect = egui::Rect::from_min_max(rect.left_top(), rect.right_bottom() - egui::vec2(0.0, 40.0));
-
-    if !state.playback.playing {
-        let drag_id = ui.id().with(LOOP_DRAG_TARGET_ID);
-        let mut active_drag_target = ui
-            .ctx()
-            .data(|data| data.get_temp::<LoopDragTarget>(drag_id));
-
-        if response.drag_started() {
-            if let Some(pointer_pos) = response.interact_pointer_pos() {
-                active_drag_target =
-                    pick_loop_drag_target(pointer_pos, content_rect, state, page_start, page_end);
-                ui.ctx().data_mut(|data| {
-                    if let Some(target) = active_drag_target {
-                        data.insert_temp(drag_id, target);
-                    } else {
-                        data.remove::<LoopDragTarget>(drag_id);
-                    }
-                });
-            }
-        }
-
-        if response.dragged() {
-            if let (Some(pointer_pos), Some(target)) = (response.interact_pointer_pos(), active_drag_target) {
-                let seconds = x_to_page_seconds(pointer_pos.x, content_rect, page_start, page_duration);
-                actions.updated_selection = Some(adjust_loop_selection(state.selection, target, seconds));
-            }
-        }
-
-        if response.drag_stopped() {
-            ui.ctx().data_mut(|data| data.remove::<LoopDragTarget>(drag_id));
-        }
-    }
-
     if let Some(pointer_pos) = response.interact_pointer_pos() {
         if page_bar_rect.contains(pointer_pos) && !state.playback.playing && response.clicked() {
             let t = ((pointer_pos.x - page_bar_rect.left()) / page_bar_rect.width())
@@ -198,19 +154,13 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
                 * paging.page_duration_seconds;
             actions.page_seek_seconds = Some(page_seek);
         } else if content_rect.contains(pointer_pos) {
-            let dragging_loop_marker = !state.playback.playing
-                && ui
-                    .ctx()
-                    .data(|data| data.get_temp::<LoopDragTarget>(ui.id().with(LOOP_DRAG_TARGET_ID)))
-                    .is_some();
-
             if !state.playback.playing && response.clicked() {
                 let t = ((pointer_pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;
                 actions.seek_seconds = Some(page_start + page_duration * t);
             }
 
             let pointer_down = ui.input(|input| input.pointer.primary_down());
-            if pointer_down && !dragging_loop_marker {
+            if pointer_down {
                 if let Some(track) = &state.track {
                     if let Some(spectrogram) = &track.spectrogram {
                         let pitch_t = ((content_rect.bottom() - pointer_pos.y) / content_rect.height())
@@ -366,55 +316,6 @@ fn draw_loop_markers(
             Stroke::new(2.0, Color32::from_rgb(255, 105, 180)),
         );
     }
-}
-
-fn pick_loop_drag_target(
-    pointer_pos: egui::Pos2,
-    rect: egui::Rect,
-    state: &AppState,
-    page_start: f64,
-    page_end: f64,
-) -> Option<LoopDragTarget> {
-    let (loop_start, loop_end) = state.selection.normalized()?;
-    let page_duration = (page_end - page_start).max(0.001);
-    let start_x = page_seconds_to_x(loop_start, rect, page_start, page_duration)?;
-    let end_x = page_seconds_to_x(loop_end, rect, page_start, page_duration)?;
-
-    let start_distance = (pointer_pos.x - start_x).abs();
-    let end_distance = (pointer_pos.x - end_x).abs();
-
-    if start_distance > LOOP_MARKER_HIT_RADIUS && end_distance > LOOP_MARKER_HIT_RADIUS {
-        return None;
-    }
-
-    if start_distance <= end_distance {
-        Some(LoopDragTarget::Start)
-    } else {
-        Some(LoopDragTarget::End)
-    }
-}
-
-fn adjust_loop_selection(selection: Selection, target: LoopDragTarget, seconds: f64) -> Selection {
-    let mut updated = selection;
-    match target {
-        LoopDragTarget::Start => updated.start_seconds = Some(seconds),
-        LoopDragTarget::End => updated.end_seconds = Some(seconds),
-    }
-    updated
-}
-
-fn page_seconds_to_x(seconds: f64, rect: egui::Rect, page_start: f64, page_duration: f64) -> Option<f32> {
-    if seconds < page_start || seconds > page_start + page_duration {
-        return None;
-    }
-
-    let normalized = ((seconds - page_start) / page_duration).clamp(0.0, 1.0) as f32;
-    Some(egui::lerp(rect.left()..=rect.right(), normalized))
-}
-
-fn x_to_page_seconds(x: f32, rect: egui::Rect, page_start: f64, page_duration: f64) -> f64 {
-    let t = ((x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;
-    page_start + page_duration * t
 }
 
 fn apply_display_gain(intensity: f32, gain_db: f32) -> f32 {

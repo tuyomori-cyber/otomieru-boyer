@@ -1,16 +1,14 @@
 # Current State
 
-Updated: 1787131941
+Updated: 1787186278
 
 Now:
-- Done: `Loop Range` ラベルを削除
-- Done: ループ開始線と終了線の個別ドラッグ調整を実装
-- Done: 調整結果をループ再生へ即時反映
-- Done: `cargo check` でビルド成立を確認
+- Done: 秒ベース表示開始位置への変更影響を調査
+- Done: 変更中心は `AppState` と `spectrogram/timeline` UI 層で、再生エンジン影響は小さいと整理
 
 Next:
-- 実機で開始線・終了線の個別微調整の触り心地を確認
-- 必要なら線の掴み判定や見た目を微調整
+- `page` 概念を `view_start_seconds` / `view_duration_seconds` へ置き換える設計案を具体化
+- 全体バーを「ページ選択」から「表示開始位置指定」へ再定義
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.
@@ -22,5 +20,5 @@ Relevant:
 - cwd: /home/tuyomori/project/otomieru-boyer
 - file: .context/session.md
 - file: .context/turns.jsonl
-- file: root-todo.md
+- file: mod.rs
 
