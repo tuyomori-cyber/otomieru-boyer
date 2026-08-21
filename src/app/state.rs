@@ -5,6 +5,9 @@ use crate::model::{PlaybackState, Selection, Track};
 const MIN_VIEW_SEGMENTS: usize = 8;
 const MAX_VIEW_SEGMENTS: usize = 48;
 const VIEW_SEGMENTS_PER_MINUTE: f64 = 6.0;
+const MIN_VIEW_DURATION_SECONDS: f64 = 0.25;
+const MAX_VIEW_ZOOM: f64 = 64.0;
+const MAX_PITCH_ZOOM: f64 = 16.0;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SpectrogramView {
@@ -12,10 +15,27 @@ pub struct SpectrogramView {
     pub total_segments: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PitchView {
+    pub min_midi_note: usize,
+    pub max_midi_note: usize,
+}
+
+impl PitchView {
+    pub fn pitch_count(self) -> usize {
+        self.max_midi_note
+            .saturating_sub(self.min_midi_note)
+            .saturating_add(1)
+    }
+}
+
 pub struct AppState {
     pub track: Option<Track>,
     pub playback: PlaybackState,
     pub view_start_seconds: f64,
+    pub view_zoom: f64,
+    pub pitch_view_center_midi: f64,
+    pub pitch_zoom: f64,
     pub selection: Selection,
     pub loaded_file_path: Option<PathBuf>,
     pub status_text: String,
@@ -43,8 +63,7 @@ impl AppState {
         } else if !self.status_text.is_empty() {
             self.status_text.clone()
         } else {
-            "Open から音源を読み込む MVP の土台です。次にデコードと再生を実装します。"
-                .to_owned()
+            "Open から音源を読み込む MVP の土台です。次にデコードと再生を実装します。".to_owned()
         }
     }
 
@@ -57,6 +76,9 @@ impl AppState {
         self.track = Some(track);
         self.playback = PlaybackState::default();
         self.view_start_seconds = 0.0;
+        self.view_zoom = 1.0;
+        self.pitch_view_center_midi = pitch_midpoint(&self.track);
+        self.pitch_zoom = 1.0;
         self.selection = Selection::default();
         self.status_text.clear();
     }
@@ -72,7 +94,15 @@ impl AppState {
     }
 
     pub fn view_duration_seconds(&self) -> f64 {
-        self.spectrogram_view().duration_seconds
+        let track_duration = self
+            .track
+            .as_ref()
+            .map(|track| track.duration_seconds)
+            .unwrap_or(0.0);
+        (self.spectrogram_view().duration_seconds / self.view_zoom).clamp(
+            MIN_VIEW_DURATION_SECONDS,
+            track_duration.max(MIN_VIEW_DURATION_SECONDS),
+        )
     }
 
     pub fn current_view_start_seconds(&self) -> f64 {
@@ -91,6 +121,44 @@ impl AppState {
 
     pub fn set_view_start_seconds(&mut self, seconds: f64) {
         self.view_start_seconds = self.clamped_view_start_seconds(seconds);
+    }
+
+    pub fn zoom_view_at(&mut self, anchor_seconds: f64, factor: f64) {
+        let old_duration = self.view_duration_seconds();
+        self.view_zoom = (self.view_zoom * factor).clamp(1.0, MAX_VIEW_ZOOM);
+        let new_duration = self.view_duration_seconds();
+        let anchor_ratio =
+            ((anchor_seconds - self.current_view_start_seconds()) / old_duration).clamp(0.0, 1.0);
+        self.set_view_start_seconds(anchor_seconds - new_duration * anchor_ratio);
+    }
+
+    pub fn pitch_view(&self) -> PitchView {
+        let (minimum, maximum) = pitch_bounds(&self.track);
+        let total = maximum.saturating_sub(minimum).saturating_add(1);
+        let visible = ((total as f64 / self.pitch_zoom).ceil() as usize).clamp(1, total);
+        let maximum_start = maximum.saturating_add(1).saturating_sub(visible);
+        let start = (self.pitch_view_center_midi - visible as f64 / 2.0)
+            .floor()
+            .clamp(minimum as f64, maximum_start as f64) as usize;
+        PitchView {
+            min_midi_note: start,
+            max_midi_note: start + visible - 1,
+        }
+    }
+
+    pub fn zoom_pitch_at(&mut self, anchor_midi: f64, factor: f64) {
+        let old_view = self.pitch_view();
+        let old_count = old_view.pitch_count() as f64;
+        let anchor_ratio =
+            ((anchor_midi - old_view.min_midi_note as f64) / old_count).clamp(0.0, 1.0);
+        let (minimum, maximum) = pitch_bounds(&self.track);
+        let total = maximum.saturating_sub(minimum).saturating_add(1) as f64;
+        self.pitch_zoom = (self.pitch_zoom * factor).clamp(1.0, MAX_PITCH_ZOOM.min(total));
+        let new_count = self.pitch_view().pitch_count() as f64;
+        self.pitch_view_center_midi = anchor_midi - new_count * anchor_ratio + new_count / 2.0;
+        self.pitch_view_center_midi = self
+            .pitch_view_center_midi
+            .clamp(minimum as f64, maximum as f64);
     }
 
     pub fn advance_view_by_window(&mut self) {
@@ -151,11 +219,54 @@ impl Default for AppState {
             track: None,
             playback: PlaybackState::default(),
             view_start_seconds: 0.0,
+            view_zoom: 1.0,
+            pitch_view_center_midi: pitch_midpoint(&None),
+            pitch_zoom: 1.0,
             selection: Selection::default(),
             loaded_file_path: None,
             status_text: String::new(),
             spectrogram_gain_db: 0.0,
             preview_tone_active: false,
         }
+    }
+}
+
+fn pitch_bounds(track: &Option<Track>) -> (usize, usize) {
+    track
+        .as_ref()
+        .and_then(|track| track.spectrogram.as_ref())
+        .map(|spectrogram| (spectrogram.min_midi_note, spectrogram.max_midi_note))
+        .unwrap_or((
+            crate::analysis::spectrum::MIN_MIDI_NOTE,
+            crate::analysis::spectrum::MAX_MIDI_NOTE,
+        ))
+}
+
+fn pitch_midpoint(track: &Option<Track>) -> f64 {
+    let (minimum, maximum) = pitch_bounds(track);
+    (minimum + maximum) as f64 / 2.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppState, MIN_VIEW_DURATION_SECONDS};
+    use crate::model::Track;
+
+    #[test]
+    fn zoom_keeps_the_anchor_time_in_the_same_relative_position() {
+        let mut state = AppState::default();
+        state.track = Some(Track {
+            duration_seconds: 120.0,
+            ..Track::default()
+        });
+        let old_duration = state.view_duration_seconds();
+        let anchor = old_duration * 0.75;
+
+        state.zoom_view_at(anchor, 2.0);
+
+        let relative =
+            (anchor - state.current_view_start_seconds()) / state.view_duration_seconds();
+        assert!((relative - 0.75).abs() < 1e-6);
+        assert!(state.view_duration_seconds() >= MIN_VIEW_DURATION_SECONDS);
     }
 }

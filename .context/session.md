@@ -1,6 +1,6 @@
 # Current State
 
-Updated: 1787273989
+Updated: 1787285453
 
 Now:
 - Done: Rubber Band backendへ独立した±1オクターブシフトを接続
@@ -19,5 +19,5 @@ Relevant:
 - cwd: /home/tuyomori/project/otomieru-boyer
 - file: .context/session.md
 - file: .context/turns.jsonl
-- file: README.md
+- file: .context/root-todo.md
 

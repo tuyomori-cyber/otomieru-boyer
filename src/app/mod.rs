@@ -31,8 +31,7 @@ impl OtomieruApp {
             .add_filter("audio", &["wav", "mp3", "flac", "ogg", "m4a", "aac"])
             .pick_file()
         else {
-            self.state
-                .set_status("ファイル選択をキャンセルしました。");
+            self.state.set_status("ファイル選択をキャンセルしました。");
             return;
         };
 
@@ -67,9 +66,11 @@ impl OtomieruApp {
     }
 
     fn sync_transport_state(&mut self) {
+        self.player.set_loop_enabled(
+            self.state.playback.loop_enabled && self.state.selection.normalized().is_some(),
+        );
         self.player
-            .set_loop_enabled(self.state.playback.loop_enabled && self.state.selection.normalized().is_some());
-        self.player.set_loop_range(self.state.selection.normalized());
+            .set_loop_range(self.state.selection.normalized());
     }
 
     fn sync_dsp_settings(&mut self) {
@@ -89,7 +90,8 @@ impl OtomieruApp {
 
 impl eframe::App for OtomieruApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let space_pressed = ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Space));
+        let space_pressed =
+            ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Space));
         let actions = toolbar::show(ctx, &mut self.state);
         if actions.open_requested {
             self.open_audio_file();
@@ -121,7 +123,8 @@ impl eframe::App for OtomieruApp {
         let snapshot = self.player.snapshot();
         self.state.playback.playing = snapshot.transport == TransportState::Playing;
         self.state.playback.position_seconds = snapshot.position_seconds;
-        self.state.follow_playhead_if_needed(previous_position_seconds);
+        self.state
+            .follow_playhead_if_needed(previous_position_seconds);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical(|ui| {
@@ -131,15 +134,24 @@ impl eframe::App for OtomieruApp {
                 self.sync_dsp_settings();
                 ui.add_space(4.0);
 
+                // ステータス行と余白を残し、それ以外をスペクトラムとピアノへ使う。
+                let visualization_height = (ui.available_height() - 32.0).max(240.0);
                 ui.horizontal(|ui| {
-                    piano::show(ui, &self.state);
-                    let spectrogram_actions = spectrogram::show(ui, &self.state);
+                    piano::show(ui, &self.state, visualization_height);
+                    let spectrogram_actions =
+                        spectrogram::show(ui, &self.state, visualization_height);
                     if let Some(seconds) = spectrogram_actions.seek_seconds {
                         self.player.seek_to_seconds(seconds);
                         self.state.playback.position_seconds = seconds;
                     }
                     if let Some(view_start_seconds) = spectrogram_actions.view_start_seconds {
                         self.state.set_view_start_seconds(view_start_seconds);
+                    }
+                    if let Some((anchor_seconds, factor)) = spectrogram_actions.zoom_at {
+                        self.state.zoom_view_at(anchor_seconds, factor);
+                    }
+                    if let Some((anchor_midi, factor)) = spectrogram_actions.pitch_zoom_at {
+                        self.state.zoom_pitch_at(anchor_midi, factor);
                     }
                     if let Some(midi_note) = spectrogram_actions.preview_midi_note {
                         if let Some(preview_tone_player) = &self.preview_tone_player {

@@ -6,13 +6,15 @@ use crate::app::state::AppState;
 pub struct SpectrogramActions {
     pub seek_seconds: Option<f64>,
     pub view_start_seconds: Option<f64>,
+    pub zoom_at: Option<(f64, f64)>,
+    pub pitch_zoom_at: Option<(f64, f64)>,
     pub preview_midi_note: Option<u8>,
     pub stop_preview: bool,
 }
 
-pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
+pub fn show(ui: &mut egui::Ui, state: &AppState, height: f32) -> SpectrogramActions {
     let mut actions = SpectrogramActions::default();
-    let desired_size = Vec2::new((ui.available_width() - 8.0).max(240.0), 420.0);
+    let desired_size = Vec2::new((ui.available_width() - 8.0).max(240.0), height.max(240.0));
     let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click_and_drag());
     let painter = ui.painter_at(rect);
 
@@ -26,11 +28,11 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
 
     let view_start = state.current_view_start_seconds();
     let view_end = state.current_view_end_seconds();
-    let view = state.spectrogram_view();
     let view_duration = (view_end - view_start).max(0.001);
     let playhead_visible = state.playback.position_seconds >= view_start
         && state.playback.position_seconds <= view_end;
-    let normalized = ((state.playback.position_seconds - view_start) / view_duration).clamp(0.0, 1.0);
+    let normalized =
+        ((state.playback.position_seconds - view_start) / view_duration).clamp(0.0, 1.0);
     let current_x = egui::lerp(rect.left()..=rect.right(), normalized as f32);
 
     draw_spectrogram_body(&painter, rect, state, view_start, view_end);
@@ -39,7 +41,10 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
     let page_bar_margin = 14.0;
     let page_bar_rect = egui::Rect::from_min_max(
         egui::pos2(rect.left() + page_bar_margin, rect.bottom() - 28.0),
-        egui::pos2(rect.right() - page_bar_margin, rect.bottom() - 28.0 + page_bar_height),
+        egui::pos2(
+            rect.right() - page_bar_margin,
+            rect.bottom() - 28.0 + page_bar_height,
+        ),
     );
 
     if playhead_visible {
@@ -81,17 +86,23 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
     );
     let current_view_rect = egui::Rect::from_min_max(
         egui::pos2(current_view_left, page_bar_rect.top()),
-        egui::pos2(current_view_right.max(current_view_left + 2.0), page_bar_rect.bottom()),
+        egui::pos2(
+            current_view_right.max(current_view_left + 2.0),
+            page_bar_rect.bottom(),
+        ),
     );
     painter.rect_filled(current_view_rect, 4.0, Color32::from_rgb(90, 168, 204));
 
-    for segment in 1..view.total_segments {
+    for segment in 1..state.spectrogram_view().total_segments {
         let x = egui::lerp(
             page_bar_rect.left()..=page_bar_rect.right(),
-            segment as f32 / view.total_segments as f32,
+            segment as f32 / state.spectrogram_view().total_segments as f32,
         );
         painter.line_segment(
-            [egui::pos2(x, page_bar_rect.top()), egui::pos2(x, page_bar_rect.bottom())],
+            [
+                egui::pos2(x, page_bar_rect.top()),
+                egui::pos2(x, page_bar_rect.bottom()),
+            ],
             Stroke::new(1.0, Color32::from_rgba_premultiplied(255, 255, 255, 30)),
         );
     }
@@ -126,10 +137,8 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
         rect.left_top() + egui::vec2(16.0, 42.0),
         Align2::LEFT_TOP,
         format!(
-            "View | {:.0} - {:.0} sec\n{}",
-            view_start,
-            view_end,
-            overlay
+            "View | {:.2} - {:.2} sec | {:.1}x\n{}",
+            view_start, view_end, state.view_zoom, overlay
         ),
         FontId::proportional(16.0),
         Color32::from_rgb(175, 205, 220),
@@ -150,17 +159,38 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
         Color32::from_rgb(165, 188, 204),
     );
 
-    let content_rect = egui::Rect::from_min_max(rect.left_top(), rect.right_bottom() - egui::vec2(0.0, 40.0));
-    if let Some(pointer_pos) = response.interact_pointer_pos() {
+    let content_rect =
+        egui::Rect::from_min_max(rect.left_top(), rect.right_bottom() - egui::vec2(0.0, 40.0));
+    if let Some(pointer_pos) = response.hover_pos() {
         if page_bar_rect.contains(pointer_pos) && !state.playback.playing {
             let pointer_down = ui.input(|input| input.pointer.primary_down());
             if response.clicked() || pointer_down {
                 let t = ((pointer_pos.x - page_bar_rect.left()) / page_bar_rect.width())
                     .clamp(0.0, 1.0) as f64;
-                let max_view_start = (duration - view.duration_seconds).max(0.0);
+                let max_view_start = (duration - view_duration).max(0.0);
                 actions.view_start_seconds = Some(max_view_start * t);
             }
         } else if content_rect.contains(pointer_pos) {
+            let (scroll_delta, ctrl_pressed) =
+                ui.input(|input| (input.raw_scroll_delta.y, input.modifiers.ctrl));
+            if scroll_delta.abs() > f32::EPSILON {
+                let factor = if scroll_delta > 0.0 { 1.25 } else { 0.8 };
+                if ctrl_pressed {
+                    let pitch_view = state.pitch_view();
+                    let pointer_t = ((content_rect.bottom() - pointer_pos.y)
+                        / content_rect.height())
+                    .clamp(0.0, 1.0) as f64;
+                    actions.pitch_zoom_at = Some((
+                        pitch_view.min_midi_note as f64
+                            + pointer_t * pitch_view.pitch_count() as f64,
+                        factor,
+                    ));
+                } else {
+                    let pointer_t = ((pointer_pos.x - content_rect.left()) / content_rect.width())
+                        .clamp(0.0, 1.0) as f64;
+                    actions.zoom_at = Some((view_start + view_duration * pointer_t, factor));
+                }
+            }
             if !state.playback.playing && response.clicked() {
                 let t = ((pointer_pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;
                 actions.seek_seconds = Some(view_start + view_duration * t);
@@ -169,13 +199,13 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) -> SpectrogramActions {
             let pointer_down = ui.input(|input| input.pointer.primary_down());
             if pointer_down {
                 if let Some(track) = &state.track {
-                    if let Some(spectrogram) = &track.spectrogram {
-                        let pitch_t = ((content_rect.bottom() - pointer_pos.y) / content_rect.height())
-                            .clamp(0.0, 0.999_999);
-                        let pitch_index =
-                            (pitch_t * spectrogram.pitches.max(1) as f32).floor() as usize;
-                        let midi_note = spectrogram.min_midi_note
-                            + pitch_index.min(spectrogram.pitches.saturating_sub(1));
+                    if track.spectrogram.is_some() {
+                        let pitch_t = ((content_rect.bottom() - pointer_pos.y)
+                            / content_rect.height())
+                        .clamp(0.0, 0.999_999);
+                        let pitch_view = state.pitch_view();
+                        let midi_note = pitch_view.min_midi_note
+                            + (pitch_t * pitch_view.pitch_count() as f32).floor() as usize;
                         actions.preview_midi_note = Some(midi_note as u8);
                     }
                 }
@@ -221,6 +251,18 @@ fn draw_spectrogram_body(
         .clamp(start_frame + 1, spectrogram.frames);
     let visible_frames = end_frame.saturating_sub(start_frame).max(1);
 
+    let pitch_view = state.pitch_view();
+    let first_pitch = pitch_view
+        .min_midi_note
+        .saturating_sub(spectrogram.min_midi_note)
+        .min(spectrogram.pitches.saturating_sub(1));
+    let last_pitch_exclusive = pitch_view
+        .max_midi_note
+        .saturating_add(1)
+        .saturating_sub(spectrogram.min_midi_note)
+        .min(spectrogram.pitches);
+    let visible_pitches = last_pitch_exclusive.saturating_sub(first_pitch).max(1);
+
     for local_frame in 0..visible_frames {
         let frame_index = start_frame + local_frame;
         let x0 = egui::lerp(
@@ -232,7 +274,7 @@ fn draw_spectrogram_body(
             (local_frame + 1) as f32 / visible_frames as f32,
         );
 
-        for pitch in 0..spectrogram.pitches {
+        for pitch in first_pitch..last_pitch_exclusive {
             let intensity = apply_display_gain(
                 spectrogram.intensity_at(frame_index, pitch),
                 state.spectrogram_gain_db,
@@ -243,11 +285,11 @@ fn draw_spectrogram_body(
 
             let y0 = egui::lerp(
                 content_rect.bottom()..=content_rect.top(),
-                pitch as f32 / spectrogram.pitches.max(1) as f32,
+                (pitch - first_pitch) as f32 / visible_pitches as f32,
             );
             let y1 = egui::lerp(
                 content_rect.bottom()..=content_rect.top(),
-                (pitch + 1) as f32 / spectrogram.pitches.max(1) as f32,
+                (pitch - first_pitch + 1) as f32 / visible_pitches as f32,
             );
 
             let color = spectrogram_color(intensity);
@@ -259,7 +301,7 @@ fn draw_spectrogram_body(
         }
     }
 
-    draw_pitch_guides(painter, content_rect, spectrogram.pitches);
+    draw_pitch_guides(painter, content_rect, pitch_view);
     draw_loop_markers(painter, content_rect, state, view_start, view_end);
 }
 
@@ -280,12 +322,20 @@ fn draw_placeholder_grid(painter: &egui::Painter, rect: egui::Rect) {
     }
 }
 
-fn draw_pitch_guides(painter: &egui::Painter, rect: egui::Rect, pitches: usize) {
-    for i in 0..=pitches {
-        if i % 12 != 0 {
+fn draw_pitch_guides(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    pitch_view: crate::app::state::PitchView,
+) {
+    let pitches = pitch_view.pitch_count();
+    for index in 0..=pitches {
+        if (pitch_view.min_midi_note + index) % 12 != 0 {
             continue;
         }
-        let y = egui::lerp(rect.bottom()..=rect.top(), i as f32 / pitches.max(1) as f32);
+        let y = egui::lerp(
+            rect.bottom()..=rect.top(),
+            index as f32 / pitches.max(1) as f32,
+        );
         painter.line_segment(
             [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
             Stroke::new(1.0, Color32::from_rgba_premultiplied(255, 255, 255, 22)),

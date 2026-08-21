@@ -1,10 +1,9 @@
 use eframe::egui::{self, Align2, Color32, FontId, Sense, Stroke, Vec2};
 
-use crate::analysis::spectrum::{MAX_MIDI_NOTE, MIN_MIDI_NOTE};
 use crate::app::state::AppState;
 
-pub fn show(ui: &mut egui::Ui, state: &AppState) {
-    let desired_size = Vec2::new(108.0, 420.0);
+pub fn show(ui: &mut egui::Ui, state: &AppState, height: f32) {
+    let desired_size = Vec2::new(108.0, height.max(240.0));
     let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
     let painter = ui.painter_at(rect);
 
@@ -16,27 +15,12 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) {
         egui::StrokeKind::Inside,
     );
 
-    let (min_midi, _max_midi, pitches) = state
-        .track
-        .as_ref()
-        .and_then(|track| track.spectrogram.as_ref())
-        .map(|spectrogram| {
-            (
-                spectrogram.min_midi_note,
-                spectrogram.max_midi_note,
-                spectrogram.pitches,
-            )
-        })
-        .unwrap_or((
-            MIN_MIDI_NOTE,
-            MAX_MIDI_NOTE,
-            MAX_MIDI_NOTE - MIN_MIDI_NOTE + 1,
-        ));
+    let pitch_view = state.pitch_view();
+    let min_midi = pitch_view.min_midi_note;
+    let pitches = pitch_view.pitch_count();
 
-    let content_rect = egui::Rect::from_min_max(
-        rect.left_top(),
-        rect.right_bottom() - egui::vec2(0.0, 40.0),
-    );
+    let content_rect =
+        egui::Rect::from_min_max(rect.left_top(), rect.right_bottom() - egui::vec2(0.0, 40.0));
 
     for pitch in 0..pitches {
         let midi_note = min_midi + pitch;
