@@ -1,6 +1,7 @@
 pub mod state;
 
 use eframe::egui;
+use std::sync::Arc;
 
 use crate::app::state::AppState;
 use crate::audio::decoder::decode_file;
@@ -17,7 +18,8 @@ pub struct OtomieruApp {
 }
 
 impl OtomieruApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        configure_japanese_fonts(&cc.egui_ctx);
         Self {
             state: AppState::default(),
             player: AudioPlayer::default(),
@@ -86,6 +88,33 @@ impl OtomieruApp {
             self.last_applied_dsp_settings = Some(self.state.playback.dsp);
         }
     }
+}
+
+fn configure_japanese_fonts(ctx: &egui::Context) {
+    const FONT_PATHS: [&str; 3] = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/ipaexg.ttf",
+    ];
+
+    let Some(font_bytes) = FONT_PATHS.iter().find_map(|path| std::fs::read(path).ok()) else {
+        return;
+    };
+
+    let mut fonts = egui::FontDefinitions::default();
+    let font_name = "japanese-ui".to_owned();
+    fonts.font_data.insert(
+        font_name.clone(),
+        Arc::new(egui::FontData::from_owned(font_bytes)),
+    );
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push(font_name.clone());
+    }
+    ctx.set_fonts(fonts);
 }
 
 impl eframe::App for OtomieruApp {

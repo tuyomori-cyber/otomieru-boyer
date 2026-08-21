@@ -1,6 +1,7 @@
 use eframe::egui;
 
 use crate::app::state::AppState;
+use crate::model::{EQ_BAND_COUNT, EQ_BAND_FREQUENCIES_HZ};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ToolbarActions {
@@ -83,6 +84,15 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
 
             ui.separator();
 
+            if ui
+                .add_enabled(dsp_controls_enabled, egui::Button::new("EQ"))
+                .clicked()
+            {
+                state.equalizer_popup_open = true;
+            }
+
+            ui.separator();
+
             ui.checkbox(&mut state.playback.loop_enabled, "Loop");
 
             ui.separator();
@@ -112,7 +122,37 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
         ui.add_space(4.0);
     });
 
+    let mut equalizer_popup_open = state.equalizer_popup_open;
+    egui::Window::new("Equalizer")
+        .open(&mut equalizer_popup_open)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.label("再生停止中に調整できます。スペクトラム表示にも反映されます。");
+            ui.add_enabled_ui(state.track.is_some() && !state.playback.playing, |ui| {
+                for index in 0..EQ_BAND_COUNT {
+                    ui.add(
+                        egui::Slider::new(
+                            &mut state.playback.dsp.equalizer.gains_db[index],
+                            -12.0..=12.0,
+                        )
+                        .text(format_frequency(EQ_BAND_FREQUENCIES_HZ[index]))
+                        .suffix(" dB")
+                        .step_by(0.5),
+                    );
+                }
+            });
+        });
+    state.equalizer_popup_open = equalizer_popup_open;
+
     actions
+}
+
+fn format_frequency(frequency_hz: f32) -> String {
+    if frequency_hz >= 1_000.0 {
+        format!("{:.0} kHz", frequency_hz / 1_000.0)
+    } else {
+        format!("{frequency_hz:.0} Hz")
+    }
 }
 
 fn format_mm_ss(seconds: f64) -> String {

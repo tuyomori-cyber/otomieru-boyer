@@ -279,6 +279,12 @@ fn draw_spectrogram_body(
                 spectrogram.intensity_at(frame_index, pitch),
                 state.spectrogram_gain_db,
             );
+            let intensity = intensity
+                * state
+                    .playback
+                    .dsp
+                    .equalizer
+                    .gain_for_frequency_hz(midi_to_frequency_hz(spectrogram.min_midi_note + pitch));
             if intensity <= 0.01 {
                 continue;
             }
@@ -378,6 +384,10 @@ fn draw_loop_markers(
 fn apply_display_gain(intensity: f32, gain_db: f32) -> f32 {
     let gain = 10.0_f32.powf(gain_db / 20.0);
     (intensity * gain).clamp(0.0, 1.0)
+}
+
+fn midi_to_frequency_hz(midi_note: usize) -> f32 {
+    440.0 * 2.0_f32.powf((midi_note as f32 - 69.0) / 12.0)
 }
 
 fn thermal_gradient(t: f32) -> (u8, u8, u8) {

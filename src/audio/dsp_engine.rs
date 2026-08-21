@@ -6,7 +6,7 @@ use crate::audio::streaming::{StreamingMetrics, StreamingPassthrough};
 use crate::audio::timestretch::{
     DspTransportEvent, PlaybackDspChainSettings, ProcessorGraph, SourceAudioView,
 };
-use crate::model::PlaybackDspSettings;
+use crate::model::{EqualizerSettings, PlaybackDspSettings, EQ_BAND_COUNT};
 
 pub struct DspEngine {
     samples: Arc<[f32]>,
@@ -16,6 +16,7 @@ pub struct DspEngine {
     dsp_speed_ratio_bits: AtomicU32,
     dsp_pitch_shift_semitones: AtomicI32,
     dsp_preserve_pitch_on_speed_change: AtomicBool,
+    dsp_eq_gain_bits: [AtomicU32; EQ_BAND_COUNT],
     processor_graph: Mutex<ProcessorGraph>,
     streaming: StreamingPassthrough,
 }
@@ -46,6 +47,7 @@ impl DspEngine {
             dsp_speed_ratio_bits: AtomicU32::new(1.0f32.to_bits()),
             dsp_pitch_shift_semitones: AtomicI32::new(0),
             dsp_preserve_pitch_on_speed_change: AtomicBool::new(true),
+            dsp_eq_gain_bits: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
             processor_graph: Mutex::new(ProcessorGraph::default()),
         }
     }
@@ -77,6 +79,12 @@ impl DspEngine {
             preserve_pitch_on_speed_change: self
                 .dsp_preserve_pitch_on_speed_change
                 .load(Ordering::Relaxed),
+            equalizer: EqualizerSettings {
+                gains_db: self
+                    .dsp_eq_gain_bits
+                    .each_ref()
+                    .map(|gain| f32::from_bits(gain.load(Ordering::Relaxed))),
+            },
         }
     }
 
@@ -91,10 +99,18 @@ impl DspEngine {
             .store(settings.pitch_shift_semitones, Ordering::Relaxed);
         self.dsp_preserve_pitch_on_speed_change
             .store(settings.preserve_pitch_on_speed_change, Ordering::Relaxed);
+        for (storage, gain_db) in self
+            .dsp_eq_gain_bits
+            .iter()
+            .zip(settings.equalizer.gains_db)
+        {
+            storage.store(gain_db.to_bits(), Ordering::Relaxed);
+        }
 
         self.streaming.configure(
             settings.speed_ratio,
             settings.pitch_shift_semitones,
+            settings.equalizer,
             settings.preserve_pitch_on_speed_change,
         );
         if let Ok(mut processor_graph) = self.processor_graph.lock() {

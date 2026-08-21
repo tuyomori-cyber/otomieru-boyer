@@ -6,6 +6,8 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use crate::model::{EqualizerSettings, EQ_BAND_COUNT, EQ_BAND_FREQUENCIES_HZ};
+
 const RING_FRAMES: usize = 32_768;
 const LOW_WATER_FRAMES: usize = 9_600;
 const HIGH_WATER_FRAMES: usize = 19_200;
@@ -55,10 +57,135 @@ struct RubberBandBackend {
     output_offset: usize,
     remaining_start_pad: usize,
     remaining_start_delay: usize,
+    equalizer: Equalizer,
+}
+
+struct Biquad {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+    z1: f32,
+    z2: f32,
+}
+
+impl Biquad {
+    fn from_coefficients(b0: f32, b1: f32, b2: f32, a0: f32, a1: f32, a2: f32) -> Self {
+        Self {
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            z1: 0.0,
+            z2: 0.0,
+        }
+    }
+
+    fn low_shelf(sample_rate: f32, frequency: f32, gain_db: f32) -> Self {
+        let a = 10.0_f32.powf(gain_db / 40.0);
+        let w = std::f32::consts::TAU * frequency / sample_rate;
+        let cos = w.cos();
+        let alpha = w.sin() * 0.5 * ((a + 1.0 / a) * 2.0).sqrt();
+        let beta = 2.0 * a.sqrt() * alpha;
+        Self::from_coefficients(
+            a * ((a + 1.0) - (a - 1.0) * cos + beta),
+            2.0 * a * ((a - 1.0) - (a + 1.0) * cos),
+            a * ((a + 1.0) - (a - 1.0) * cos - beta),
+            (a + 1.0) + (a - 1.0) * cos + beta,
+            -2.0 * ((a - 1.0) + (a + 1.0) * cos),
+            (a + 1.0) + (a - 1.0) * cos - beta,
+        )
+    }
+
+    fn peaking(sample_rate: f32, frequency: f32, gain_db: f32) -> Self {
+        let a = 10.0_f32.powf(gain_db / 40.0);
+        let w = std::f32::consts::TAU * frequency / sample_rate;
+        let alpha = w.sin() * 0.5;
+        Self::from_coefficients(
+            1.0 + alpha * a,
+            -2.0 * w.cos(),
+            1.0 - alpha * a,
+            1.0 + alpha / a,
+            -2.0 * w.cos(),
+            1.0 - alpha / a,
+        )
+    }
+
+    fn high_shelf(sample_rate: f32, frequency: f32, gain_db: f32) -> Self {
+        let a = 10.0_f32.powf(gain_db / 40.0);
+        let w = std::f32::consts::TAU * frequency / sample_rate;
+        let cos = w.cos();
+        let alpha = w.sin() * 0.5 * ((a + 1.0 / a) * 2.0).sqrt();
+        let beta = 2.0 * a.sqrt() * alpha;
+        Self::from_coefficients(
+            a * ((a + 1.0) + (a - 1.0) * cos + beta),
+            -2.0 * a * ((a - 1.0) + (a + 1.0) * cos),
+            a * ((a + 1.0) + (a - 1.0) * cos - beta),
+            (a + 1.0) - (a - 1.0) * cos + beta,
+            2.0 * ((a - 1.0) - (a + 1.0) * cos),
+            (a + 1.0) - (a - 1.0) * cos - beta,
+        )
+    }
+
+    fn process(&mut self, input: f32) -> f32 {
+        let output = self.b0 * input + self.z1;
+        self.z1 = self.b1 * input - self.a1 * output + self.z2;
+        self.z2 = self.b2 * input - self.a2 * output;
+        output
+    }
+}
+
+struct Equalizer {
+    filters: Vec<Vec<Biquad>>,
+}
+
+impl Equalizer {
+    fn new(sample_rate: u32, channels: usize, settings: EqualizerSettings) -> Self {
+        let rate = sample_rate as f32;
+        Self {
+            filters: (0..channels)
+                .map(|_| {
+                    (0..EQ_BAND_COUNT)
+                        .map(|index| match index {
+                            0 => Biquad::low_shelf(
+                                rate,
+                                EQ_BAND_FREQUENCIES_HZ[index],
+                                settings.gains_db[index],
+                            ),
+                            index if index == EQ_BAND_COUNT - 1 => Biquad::high_shelf(
+                                rate,
+                                EQ_BAND_FREQUENCIES_HZ[index],
+                                settings.gains_db[index],
+                            ),
+                            _ => Biquad::peaking(
+                                rate,
+                                EQ_BAND_FREQUENCIES_HZ[index],
+                                settings.gains_db[index],
+                            ),
+                        })
+                        .collect()
+                })
+                .collect(),
+        }
+    }
+
+    fn process(&mut self, channel: usize, sample: f32) -> f32 {
+        self.filters[channel]
+            .iter_mut()
+            .fold(sample, |value, filter| filter.process(value))
+    }
 }
 
 impl RubberBandBackend {
-    fn new(sample_rate: u32, channels: usize, speed: f64, pitch_semitones: i32) -> Self {
+    fn new(
+        sample_rate: u32,
+        channels: usize,
+        speed: f64,
+        pitch_semitones: i32,
+        equalizer: EqualizerSettings,
+    ) -> Self {
         let channels = channels.max(1);
         let options =
             RB_OPTION_PROCESS_REALTIME | RB_OPTION_THREADING_NEVER | RB_OPTION_CHANNELS_TOGETHER;
@@ -100,6 +227,7 @@ impl RubberBandBackend {
             output_offset: 0,
             remaining_start_pad,
             remaining_start_delay,
+            equalizer: Equalizer::new(sample_rate, channels, equalizer),
         }
     }
 
@@ -121,7 +249,7 @@ impl RubberBandBackend {
                     continue;
                 }
                 for (channel, sample) in destination.iter_mut().enumerate() {
-                    *sample = self.output[channel][frame];
+                    *sample = self.equalizer.process(channel, self.output[channel][frame]);
                 }
                 return;
             }
@@ -280,6 +408,7 @@ struct WorkerState {
     requested_position_bits: AtomicU64,
     speed_bits: AtomicU32,
     pitch_shift_semitones: AtomicI32,
+    eq_gain_bits: [AtomicU32; EQ_BAND_COUNT],
     enabled: AtomicBool,
     shutdown: AtomicBool,
     underruns: AtomicU64,
@@ -317,6 +446,7 @@ impl StreamingPassthrough {
             requested_position_bits: AtomicU64::new(0.0f64.to_bits()),
             speed_bits: AtomicU32::new(1.0f32.to_bits()),
             pitch_shift_semitones: AtomicI32::new(0),
+            eq_gain_bits: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
             enabled: AtomicBool::new(true),
             shutdown: AtomicBool::new(false),
             underruns: AtomicU64::new(0),
@@ -344,13 +474,22 @@ impl StreamingPassthrough {
         }
     }
 
-    pub fn configure(&self, speed: f32, pitch_shift_semitones: i32, enabled: bool) {
+    pub fn configure(
+        &self,
+        speed: f32,
+        pitch_shift_semitones: i32,
+        equalizer: EqualizerSettings,
+        enabled: bool,
+    ) {
         self.state
             .speed_bits
             .store(speed.clamp(0.25, 4.0).to_bits(), Ordering::Release);
         self.state
             .pitch_shift_semitones
             .store(pitch_shift_semitones.clamp(-24, 24), Ordering::Release);
+        for (storage, gain_db) in self.state.eq_gain_bits.iter().zip(equalizer.gains_db) {
+            storage.store(gain_db.clamp(-12.0, 12.0).to_bits(), Ordering::Release);
+        }
         self.state.enabled.store(enabled, Ordering::Release);
     }
 
@@ -419,11 +558,18 @@ fn run_worker(
             position = f64::from_bits(state.requested_position_bits.load(Ordering::Acquire));
             let speed = f32::from_bits(state.speed_bits.load(Ordering::Acquire)) as f64;
             let pitch_shift_semitones = state.pitch_shift_semitones.load(Ordering::Acquire);
+            let equalizer = EqualizerSettings {
+                gains_db: state
+                    .eq_gain_bits
+                    .each_ref()
+                    .map(|gain| f32::from_bits(gain.load(Ordering::Acquire))),
+            };
             backend = Some(RubberBandBackend::new(
                 output_rate,
                 state.ring.channels,
                 speed,
                 pitch_shift_semitones,
+                equalizer,
             ));
         }
 
@@ -490,7 +636,7 @@ fn interpolate(
 
 #[cfg(test)]
 mod tests {
-    use super::{interpolate, FrameRing, RubberBandBackend};
+    use super::{interpolate, EqualizerSettings, FrameRing, RubberBandBackend};
 
     #[test]
     fn ring_discards_a_frame_from_an_old_generation() {
@@ -525,7 +671,7 @@ mod tests {
         let source = (0..96_000)
             .map(|frame| (frame as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin())
             .collect::<Vec<_>>();
-        let mut backend = RubberBandBackend::new(48_000, 1, 0.75, 12);
+        let mut backend = RubberBandBackend::new(48_000, 1, 0.75, 12, EqualizerSettings::default());
         let mut position = 0.0;
         let mut frame = [0.0];
         let mut peak = 0.0f32;
