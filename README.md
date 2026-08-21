@@ -2,6 +2,8 @@
 
 音声のスペクトログラムを見ながら、区間ループ、音程維持付き速度変更、オクターブシフト、5バンドEQを操作できるLinux向けデスクトップアプリケーションです。
 
+![Otomieru Boyer screenshot](assets/screenshot.png)
+
 ## 主な機能
 
 - 音声ファイルの読み込みと再生（WAV / MP3 / FLAC / OGG / M4A / AAC）
