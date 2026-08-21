@@ -1,7 +1,8 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
 
+use crate::audio::streaming::{StreamingMetrics, StreamingPassthrough};
 use crate::audio::timestretch::{
     DspTransportEvent, PlaybackDspChainSettings, ProcessorGraph, SourceAudioView,
 };
@@ -16,6 +17,7 @@ pub struct DspEngine {
     dsp_pitch_shift_semitones: AtomicI32,
     dsp_preserve_pitch_on_speed_change: AtomicBool,
     processor_graph: Mutex<ProcessorGraph>,
+    streaming: StreamingPassthrough,
 }
 
 impl DspEngine {
@@ -24,12 +26,23 @@ impl DspEngine {
         source_channels: u16,
         source_sample_rate: u32,
         output_sample_rate: u32,
+        output_channels: u16,
     ) -> Self {
+        let source_channels = source_channels.max(1);
+        let source_sample_rate = source_sample_rate.max(1);
+        let output_sample_rate = output_sample_rate.max(1);
         Self {
+            streaming: StreamingPassthrough::new(
+                Arc::clone(&samples),
+                source_channels as usize,
+                source_sample_rate,
+                output_sample_rate,
+                output_channels as usize,
+            ),
             samples,
-            source_channels: source_channels.max(1),
-            source_sample_rate: source_sample_rate.max(1),
-            output_sample_rate: output_sample_rate.max(1),
+            source_channels,
+            source_sample_rate,
+            output_sample_rate,
             dsp_speed_ratio_bits: AtomicU32::new(1.0f32.to_bits()),
             dsp_pitch_shift_semitones: AtomicI32::new(0),
             dsp_preserve_pitch_on_speed_change: AtomicBool::new(true),
@@ -79,6 +92,11 @@ impl DspEngine {
         self.dsp_preserve_pitch_on_speed_change
             .store(settings.preserve_pitch_on_speed_change, Ordering::Relaxed);
 
+        self.streaming.configure(
+            settings.speed_ratio,
+            settings.pitch_shift_semitones,
+            settings.preserve_pitch_on_speed_change,
+        );
         if let Ok(mut processor_graph) = self.processor_graph.lock() {
             processor_graph.configure(self.dsp_chain_settings());
             processor_graph.reset();
@@ -92,6 +110,16 @@ impl DspEngine {
     }
 
     pub fn notify_transport_event(&self, event: DspTransportEvent) {
+        match event {
+            DspTransportEvent::Start => {}
+            DspTransportEvent::Stop => self.streaming.reset(0.0),
+            DspTransportEvent::Seek { position_seconds } => self
+                .streaming
+                .reset(position_seconds * self.source_sample_rate as f64),
+            DspTransportEvent::LoopJump { start_seconds, .. } => self
+                .streaming
+                .reset(start_seconds * self.source_sample_rate as f64),
+        }
         if let Ok(mut processor_graph) = self.processor_graph.lock() {
             processor_graph.handle_transport_event(event);
         }
@@ -121,7 +149,25 @@ impl DspEngine {
     }
 
     pub fn render_source_sample(&self, position_frames: f64, channel: usize) -> f32 {
-        let source = SourceAudioView::new(&self.samples, self.source_channels());
-        source.interpolate_sample(position_frames, channel)
+        SourceAudioView::new(&self.samples, self.source_channels())
+            .interpolate_sample(position_frames, channel)
+    }
+
+    /// 音声コールバックから呼べる、ロックを取らない世代切替です。
+    pub fn reset_stream_to(&self, source_position_frames: f64) {
+        self.streaming.reset(source_position_frames);
+    }
+
+    pub fn stream_frame(&self, destination: &mut [f32]) -> bool {
+        self.streaming.pop_frame(destination)
+    }
+
+    /// 音声コールバックから旧 generation を破棄するための入口です。
+    pub fn discard_stale_stream_frames(&self) {
+        self.streaming.discard_stale_frames();
+    }
+
+    pub fn streaming_metrics(&self) -> StreamingMetrics {
+        self.streaming.metrics()
     }
 }

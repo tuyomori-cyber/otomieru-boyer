@@ -1,5 +1,3 @@
-use crate::model::PlaybackDspSettings;
-
 #[derive(Debug, Clone, Copy)]
 pub struct TimeStretchSettings {
     pub speed: f32,
@@ -103,8 +101,13 @@ pub trait PitchShiftProcessor: Send {
 pub enum DspTransportEvent {
     Start,
     Stop,
-    Seek { position_seconds: f64 },
-    LoopJump { start_seconds: f64, end_seconds: f64 },
+    Seek {
+        position_seconds: f64,
+    },
+    LoopJump {
+        start_seconds: f64,
+        end_seconds: f64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -216,3 +219,4 @@ impl ProcessorGraph {
         self.pitch_shift.process_sample(sample, channel)
     }
 }
+use crate::model::PlaybackDspSettings;

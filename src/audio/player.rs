@@ -95,8 +95,8 @@ impl AudioPlayer {
         let default_config = device
             .default_output_config()
             .map_err(PlayerError::DefaultConfig)?;
-        let config =
-            select_output_config(&device, track, default_config).map_err(PlayerError::SupportedConfigs)?;
+        let config = select_output_config(&device, track, default_config)
+            .map_err(PlayerError::SupportedConfigs)?;
         let stream_config = config.config();
 
         let runtime = Arc::new(PlaybackRuntime::from_track(track, &stream_config));
@@ -117,7 +117,10 @@ impl AudioPlayer {
         .map_err(PlayerError::BuildStream)?;
 
         stream.play().map_err(PlayerError::PlayStream)?;
-        self.output_info = Some(OutputStreamInfo::from_config(config.sample_format(), &stream_config));
+        self.output_info = Some(OutputStreamInfo::from_config(
+            config.sample_format(),
+            &stream_config,
+        ));
         self.runtime = Some(runtime);
         self.stream = Some(stream);
         Ok(())
@@ -202,17 +205,23 @@ impl AudioPlayer {
         };
 
         let dsp_settings = runtime.current_dsp_settings();
+        let stream_metrics = runtime.dsp_engine.streaming_metrics();
 
         PlayerSnapshot {
             transport: TransportState::from_u8(runtime.transport.load(Ordering::Relaxed)),
             position_seconds: runtime.current_position_seconds(),
             debug_summary: format!(
-                "source: {} Hz / {} ch / {:.5}x step | dsp {:.2}x / {:+} st | {}",
+                "source: {} Hz / {} ch / {:.5}x step | dsp {:.2}x / {:+} st | stream {} / {} fr / {} generated / {} underrun / {} KiB | {}",
                 runtime.dsp_engine.source_sample_rate(),
                 runtime.dsp_engine.source_channels_u16(),
                 runtime.step_ratio(),
                 dsp_settings.speed_ratio,
                 dsp_settings.pitch_shift_semitones,
+                if stream_metrics.ready { "ready" } else { "preparing" },
+                stream_metrics.buffered_frames,
+                stream_metrics.generated_frames,
+                stream_metrics.underruns,
+                stream_metrics.allocated_bytes / 1024,
                 output
             ),
             dsp_settings,
@@ -252,8 +261,12 @@ impl AudioPlayer {
                     }
                 }
             } else {
-                runtime.loop_start_frames_bits.store(0.0f64.to_bits(), Ordering::Relaxed);
-                runtime.loop_end_frames_bits.store(0.0f64.to_bits(), Ordering::Relaxed);
+                runtime
+                    .loop_start_frames_bits
+                    .store(0.0f64.to_bits(), Ordering::Relaxed);
+                runtime
+                    .loop_end_frames_bits
+                    .store(0.0f64.to_bits(), Ordering::Relaxed);
             }
         }
     }
@@ -273,7 +286,6 @@ impl Default for AudioPlayer {
 
 struct PlaybackRuntime {
     dsp_engine: DspEngine,
-    output_channels: u16,
     position_frames_bits: AtomicU64,
     transport: AtomicU8,
     loop_enabled: AtomicBool,
@@ -289,8 +301,8 @@ impl PlaybackRuntime {
                 track.channels.max(1),
                 track.sample_rate.max(1),
                 config.sample_rate.0.max(1),
+                config.channels.max(1),
             ),
-            output_channels: config.channels.max(1),
             position_frames_bits: AtomicU64::new(0.0f64.to_bits()),
             transport: AtomicU8::new(TransportState::Stopped.as_u8()),
             loop_enabled: AtomicBool::new(false),
@@ -353,6 +365,8 @@ impl PlaybackRuntime {
 
     fn set_dsp_settings(&self, settings: PlaybackDspSettings) {
         self.dsp_engine.set_dsp_settings(settings);
+        self.dsp_engine
+            .reset_stream_to(self.current_position_frames());
     }
 }
 
@@ -420,26 +434,29 @@ fn write_data<T>(output: &mut [T], output_channels: usize, runtime: &Arc<Playbac
 where
     T: Sample + FromSample<f32>,
 {
+    // 停止中も実行する。Seek 後の旧世代をここで捨てることで、worker が
+    // 新しい位置の先読みを再開できる。
+    runtime.dsp_engine.discard_stale_stream_frames();
     let transport = TransportState::from_u8(runtime.transport.load(Ordering::Relaxed));
     let mut position_frames = runtime.current_position_frames();
     let total_frames = runtime.total_source_frames() as f64;
     let loop_range = runtime.loop_range_frames();
-    let speed_ratio = runtime.current_dsp_settings().speed_ratio.max(0.25) as f64;
+    let dsp_settings = runtime.current_dsp_settings();
+    let speed_ratio = dsp_settings.speed_ratio.max(0.25) as f64;
+    let use_streaming = dsp_settings.preserve_pitch_on_speed_change;
+    let mut streamed_frame = [0.0f32; 32];
 
     for frame in output.chunks_mut(output_channels) {
         if let Some((loop_start, loop_end)) = loop_range {
             if position_frames >= loop_end {
                 position_frames = loop_start;
-                runtime
-                    .dsp_engine
-                    .notify_transport_event(DspTransportEvent::LoopJump {
-                        start_seconds: loop_start / runtime.dsp_engine.source_sample_rate() as f64,
-                        end_seconds: loop_end / runtime.dsp_engine.source_sample_rate() as f64,
-                    });
+                runtime.dsp_engine.reset_stream_to(loop_start);
             }
         }
 
-        if transport != TransportState::Playing || total_frames == 0.0 || position_frames >= total_frames
+        if transport != TransportState::Playing
+            || total_frames == 0.0
+            || position_frames >= total_frames
         {
             if position_frames >= total_frames && total_frames > 0.0 {
                 runtime
@@ -454,8 +471,25 @@ where
             continue;
         }
 
+        let streamed = use_streaming
+            && output_channels <= streamed_frame.len()
+            && runtime
+                .dsp_engine
+                .stream_frame(&mut streamed_frame[..output_channels]);
+        if use_streaming && !streamed {
+            for sample in frame {
+                *sample = T::from_sample(0.0);
+            }
+            continue;
+        }
         for (channel, sample) in frame.iter_mut().enumerate() {
-            let value = runtime.dsp_engine.render_source_sample(position_frames, channel);
+            let value = if streamed {
+                streamed_frame[channel]
+            } else {
+                runtime
+                    .dsp_engine
+                    .render_source_sample(position_frames, channel)
+            };
             *sample = T::from_sample(value);
         }
 

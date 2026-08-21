@@ -2,6 +2,8 @@
 name = "otomieru_boyer"
 version = "0.1.0"
 edition = "2024"
+license = "GPL-2.0-or-later"
+description = "音声を可視化し、音程を維持した速度変更で再生するデスクトップアプリケーション"
 
 [dependencies]
 cpal = "0.16.0"

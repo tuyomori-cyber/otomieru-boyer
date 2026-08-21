@@ -6,12 +6,14 @@ use crate::app::state::AppState;
 use crate::audio::decoder::decode_file;
 use crate::audio::player::{AudioPlayer, TransportState, UI_REPAINT_INTERVAL};
 use crate::audio::preview_tone::{PreviewTonePlayer, PreviewToneRequest};
+use crate::model::PlaybackDspSettings;
 use crate::ui::{piano, spectrogram, timeline, toolbar};
 
 pub struct OtomieruApp {
     state: AppState,
     player: AudioPlayer,
     preview_tone_player: Option<PreviewTonePlayer>,
+    last_applied_dsp_settings: Option<PlaybackDspSettings>,
 }
 
 impl OtomieruApp {
@@ -20,6 +22,7 @@ impl OtomieruApp {
             state: AppState::default(),
             player: AudioPlayer::default(),
             preview_tone_player: PreviewTonePlayer::new().ok(),
+            last_applied_dsp_settings: None,
         }
     }
 
@@ -40,10 +43,14 @@ impl OtomieruApp {
             Ok(decoded) => {
                 let track = crate::model::Track::from_decoded(decoded);
                 match self.player.load_track(&track) {
-                    Ok(()) => self.state.set_loaded_track(path, track),
+                    Ok(()) => {
+                        self.state.set_loaded_track(path, track);
+                        self.last_applied_dsp_settings = None;
+                    }
                     Err(error) => {
                         self.state.track = None;
                         self.state.loaded_file_path = None;
+                        self.last_applied_dsp_settings = None;
                         self.state
                             .set_status(format!("再生準備に失敗しました: {error}"));
                     }
@@ -52,6 +59,7 @@ impl OtomieruApp {
             Err(error) => {
                 self.state.track = None;
                 self.state.loaded_file_path = None;
+                self.last_applied_dsp_settings = None;
                 self.state
                     .set_status(format!("読み込みに失敗しました: {error}"));
             }
@@ -65,8 +73,16 @@ impl OtomieruApp {
     }
 
     fn sync_dsp_settings(&mut self) {
-        if !self.state.playback.playing {
+        if self.state.track.is_none() {
+            self.last_applied_dsp_settings = None;
+            return;
+        }
+
+        if !self.state.playback.playing
+            && self.last_applied_dsp_settings != Some(self.state.playback.dsp)
+        {
             self.player.set_dsp_settings(self.state.playback.dsp);
+            self.last_applied_dsp_settings = Some(self.state.playback.dsp);
         }
     }
 }
