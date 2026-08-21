@@ -1,7 +1,7 @@
 use std::f32::consts::TAU;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig};

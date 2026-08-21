@@ -1,12 +1,9 @@
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 
-use crate::audio::streaming::{StreamingMetrics, StreamingPassthrough};
-use crate::audio::timestretch::{
-    DspTransportEvent, PlaybackDspChainSettings, ProcessorGraph, SourceAudioView,
-};
-use crate::model::{EqualizerSettings, PlaybackDspSettings, EQ_BAND_COUNT};
+use crate::audio::streaming::StreamingPassthrough;
+use crate::audio::timestretch::DspTransportEvent;
+use crate::model::{EQ_BAND_COUNT, EqualizerSettings, PlaybackDspSettings};
 
 pub struct DspEngine {
     samples: Arc<[f32]>,
@@ -17,7 +14,6 @@ pub struct DspEngine {
     dsp_pitch_shift_semitones: AtomicI32,
     dsp_preserve_pitch_on_speed_change: AtomicBool,
     dsp_eq_gain_bits: [AtomicU32; EQ_BAND_COUNT],
-    processor_graph: Mutex<ProcessorGraph>,
     streaming: StreamingPassthrough,
 }
 
@@ -48,7 +44,6 @@ impl DspEngine {
             dsp_pitch_shift_semitones: AtomicI32::new(0),
             dsp_preserve_pitch_on_speed_change: AtomicBool::new(true),
             dsp_eq_gain_bits: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
-            processor_graph: Mutex::new(ProcessorGraph::default()),
         }
     }
 
@@ -62,10 +57,6 @@ impl DspEngine {
 
     pub fn source_sample_rate(&self) -> u32 {
         self.source_sample_rate
-    }
-
-    pub fn source_channels_u16(&self) -> u16 {
-        self.source_channels
     }
 
     pub fn step_ratio(&self) -> f64 {
@@ -86,10 +77,6 @@ impl DspEngine {
                     .map(|gain| f32::from_bits(gain.load(Ordering::Relaxed))),
             },
         }
-    }
-
-    pub fn dsp_chain_settings(&self) -> PlaybackDspChainSettings {
-        PlaybackDspChainSettings::from_playback_settings(self.current_dsp_settings())
     }
 
     pub fn set_dsp_settings(&self, settings: PlaybackDspSettings) {
@@ -113,16 +100,6 @@ impl DspEngine {
             settings.equalizer,
             settings.preserve_pitch_on_speed_change,
         );
-        if let Ok(mut processor_graph) = self.processor_graph.lock() {
-            processor_graph.configure(self.dsp_chain_settings());
-            processor_graph.reset();
-        }
-    }
-
-    pub fn reset_processors(&self) {
-        if let Ok(mut processor_graph) = self.processor_graph.lock() {
-            processor_graph.reset();
-        }
     }
 
     pub fn notify_transport_event(&self, event: DspTransportEvent) {
@@ -136,37 +113,22 @@ impl DspEngine {
                 .streaming
                 .reset(start_seconds * self.source_sample_rate as f64),
         }
-        if let Ok(mut processor_graph) = self.processor_graph.lock() {
-            processor_graph.handle_transport_event(event);
-        }
-    }
-
-    pub fn processor_chain_settings(&self) -> PlaybackDspChainSettings {
-        if let Ok(processor_graph) = self.processor_graph.lock() {
-            processor_graph.current_settings()
-        } else {
-            self.dsp_chain_settings()
-        }
-    }
-
-    pub fn render_sample(&self, position_frames: f64, channel: usize) -> f32 {
-        let source = SourceAudioView::new(&self.samples, self.source_channels());
-        let sample = if let Ok(mut processor_graph) = self.processor_graph.lock() {
-            processor_graph.render_time_stretched_sample(&source, position_frames, channel)
-        } else {
-            source.interpolate_sample(position_frames, channel)
-        };
-
-        if let Ok(mut processor_graph) = self.processor_graph.lock() {
-            processor_graph.process_sample(sample, channel)
-        } else {
-            sample
-        }
     }
 
     pub fn render_source_sample(&self, position_frames: f64, channel: usize) -> f32 {
-        SourceAudioView::new(&self.samples, self.source_channels())
-            .interpolate_sample(position_frames, channel)
+        let channels = self.source_channels();
+        let channel = channel.min(channels.saturating_sub(1));
+        let base_frame = position_frames.floor().max(0.0) as usize;
+        let next_frame = base_frame.saturating_add(1);
+        let fraction = (position_frames - base_frame as f64).clamp(0.0, 1.0) as f32;
+        let sample_at = |frame: usize| {
+            self.samples
+                .get(frame.saturating_mul(channels).saturating_add(channel))
+                .copied()
+                .unwrap_or(0.0)
+        };
+
+        sample_at(base_frame) * (1.0 - fraction) + sample_at(next_frame) * fraction
     }
 
     /// 音声コールバックから呼べる、ロックを取らない世代切替です。
@@ -181,9 +143,5 @@ impl DspEngine {
     /// 音声コールバックから旧 generation を破棄するための入口です。
     pub fn discard_stale_stream_frames(&self) {
         self.streaming.discard_stale_frames();
-    }
-
-    pub fn streaming_metrics(&self) -> StreamingMetrics {
-        self.streaming.metrics()
     }
 }

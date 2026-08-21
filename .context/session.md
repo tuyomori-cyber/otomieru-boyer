@@ -1,13 +1,12 @@
 # Current State
 
-Updated: 1787286201
+Updated: 1787287489
 
 Now:
-- Done: Rubber Band backendへ独立した±1オクターブシフトを接続
-- Pending: オクターブシフト単独・速度変更との組合せを実機確認
+- Done: 静的解析で検出された未使用コード・Clippy警告を解消し、警告ゼロを確認
 
 Next:
-- 実機結果を基に音質・CPU・UI表記を調整
+- リリース前の長尺音源・EQ・複合DSP設定の実機確認
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.
@@ -19,5 +18,5 @@ Relevant:
 - cwd: /home/tuyomori/project/otomieru-boyer
 - file: .context/session.md
 - file: .context/turns.jsonl
-- file: root-todo.md
+- file: .context/root-todo.md
 

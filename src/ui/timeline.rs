@@ -55,63 +55,81 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, left_offset: f32) -> Timeli
         .ctx()
         .data(|data| data.get_temp::<TimelineDragMode>(drag_id));
 
-    if let Some((start, end)) = state.selection.normalized() {
-        if start >= view_start && end <= view_end {
-            let start_x = time_to_x(start, view_start, view_duration, timeline_rect);
-            let end_x = time_to_x(end, view_start, view_duration, timeline_rect);
-            let selection_rect = egui::Rect::from_min_max(
-                egui::pos2(start_x, timeline_rect.top()),
-                egui::pos2(end_x, timeline_rect.bottom()),
-            );
-            painter.rect_filled(
-                selection_rect,
-                999.0,
-                Color32::from_rgba_premultiplied(80, 180, 255, 84),
-            );
-            draw_loop_handle(&painter, start_x, timeline_rect.center().y, HandleDirection::Start);
-            draw_loop_handle(&painter, end_x, timeline_rect.center().y, HandleDirection::End);
-        }
+    if let Some((start, end)) = state.selection.normalized()
+        && start >= view_start
+        && end <= view_end
+    {
+        let start_x = time_to_x(start, view_start, view_duration, timeline_rect);
+        let end_x = time_to_x(end, view_start, view_duration, timeline_rect);
+        let selection_rect = egui::Rect::from_min_max(
+            egui::pos2(start_x, timeline_rect.top()),
+            egui::pos2(end_x, timeline_rect.bottom()),
+        );
+        painter.rect_filled(
+            selection_rect,
+            999.0,
+            Color32::from_rgba_premultiplied(80, 180, 255, 84),
+        );
+        draw_loop_handle(
+            &painter,
+            start_x,
+            timeline_rect.center().y,
+            HandleDirection::Start,
+        );
+        draw_loop_handle(
+            &painter,
+            end_x,
+            timeline_rect.center().y,
+            HandleDirection::End,
+        );
     }
 
-    if response.drag_started() {
-        if let Some(pointer_pos) = response.interact_pointer_pos() {
-            drag_mode = Some(pick_drag_mode(pointer_pos.x, state, timeline_rect, view_start, view_duration));
-            ui.ctx().data_mut(|data| {
-                if let Some(mode) = drag_mode {
-                    data.insert_temp(drag_id, mode);
-                }
-            });
-            let seconds = x_to_time(pointer_pos.x, view_start, view_duration, timeline_rect);
-            match drag_mode.unwrap_or(TimelineDragMode::Create) {
-                TimelineDragMode::Create => state.selection.set_range(seconds, seconds),
-                TimelineDragMode::AdjustStart => state.selection.start_seconds = Some(seconds),
-                TimelineDragMode::AdjustEnd => state.selection.end_seconds = Some(seconds),
+    if response.drag_started()
+        && let Some(pointer_pos) = response.interact_pointer_pos()
+    {
+        drag_mode = Some(pick_drag_mode(
+            pointer_pos.x,
+            state,
+            timeline_rect,
+            view_start,
+            view_duration,
+        ));
+        ui.ctx().data_mut(|data| {
+            if let Some(mode) = drag_mode {
+                data.insert_temp(drag_id, mode);
             }
-            actions.selection_changed = true;
+        });
+        let seconds = x_to_time(pointer_pos.x, view_start, view_duration, timeline_rect);
+        match drag_mode.unwrap_or(TimelineDragMode::Create) {
+            TimelineDragMode::Create => state.selection.set_range(seconds, seconds),
+            TimelineDragMode::AdjustStart => state.selection.start_seconds = Some(seconds),
+            TimelineDragMode::AdjustEnd => state.selection.end_seconds = Some(seconds),
         }
+        actions.selection_changed = true;
     }
 
-    if response.dragged() {
-        if let Some(pointer_pos) = response.interact_pointer_pos() {
-            let seconds = x_to_time(pointer_pos.x, view_start, view_duration, timeline_rect);
-            match drag_mode.unwrap_or(TimelineDragMode::Create) {
-                TimelineDragMode::Create => {
-                    let start = state.selection.start_seconds.unwrap_or(seconds);
-                    state.selection.set_range(start, seconds);
-                }
-                TimelineDragMode::AdjustStart => {
-                    state.selection.start_seconds = Some(seconds);
-                }
-                TimelineDragMode::AdjustEnd => {
-                    state.selection.end_seconds = Some(seconds);
-                }
+    if response.dragged()
+        && let Some(pointer_pos) = response.interact_pointer_pos()
+    {
+        let seconds = x_to_time(pointer_pos.x, view_start, view_duration, timeline_rect);
+        match drag_mode.unwrap_or(TimelineDragMode::Create) {
+            TimelineDragMode::Create => {
+                let start = state.selection.start_seconds.unwrap_or(seconds);
+                state.selection.set_range(start, seconds);
             }
-            actions.selection_changed = true;
+            TimelineDragMode::AdjustStart => {
+                state.selection.start_seconds = Some(seconds);
+            }
+            TimelineDragMode::AdjustEnd => {
+                state.selection.end_seconds = Some(seconds);
+            }
         }
+        actions.selection_changed = true;
     }
 
     if response.drag_stopped() {
-        ui.ctx().data_mut(|data| data.remove::<TimelineDragMode>(drag_id));
+        ui.ctx()
+            .data_mut(|data| data.remove::<TimelineDragMode>(drag_id));
         if state.selection.normalized().is_none() {
             state.selection.clear();
         }

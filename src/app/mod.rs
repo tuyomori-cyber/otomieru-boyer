@@ -182,11 +182,11 @@ impl eframe::App for OtomieruApp {
                     if let Some((anchor_midi, factor)) = spectrogram_actions.pitch_zoom_at {
                         self.state.zoom_pitch_at(anchor_midi, factor);
                     }
-                    if let Some(midi_note) = spectrogram_actions.preview_midi_note {
-                        if let Some(preview_tone_player) = &self.preview_tone_player {
-                            preview_tone_player.update_preview(PreviewToneRequest { midi_note });
-                            self.state.preview_tone_active = true;
-                        }
+                    if let Some(midi_note) = spectrogram_actions.preview_midi_note
+                        && let Some(preview_tone_player) = &self.preview_tone_player
+                    {
+                        preview_tone_player.update_preview(PreviewToneRequest { midi_note });
+                        self.state.preview_tone_active = true;
                     }
                     if spectrogram_actions.stop_preview {
                         if let Some(preview_tone_player) = &self.preview_tone_player {

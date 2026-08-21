@@ -83,7 +83,10 @@ pub fn decode_file(path: impl AsRef<Path>) -> Result<DecodedAudio, DecoderError>
         symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default())?;
 
     let fallback_sample_rate = track.codec_params.sample_rate;
-    let fallback_channels = track.codec_params.channels.map(|channels| channels.count() as u16);
+    let fallback_channels = track
+        .codec_params
+        .channels
+        .map(|channels| channels.count() as u16);
     let track_id = track.id;
 
     let mut samples = Vec::new();
@@ -125,9 +128,7 @@ pub fn decode_file(path: impl AsRef<Path>) -> Result<DecodedAudio, DecoderError>
     let sample_rate = detected_sample_rate
         .or(fallback_sample_rate)
         .ok_or(DecoderError::MissingSampleRate)?;
-    let channels = detected_channels
-        .or(fallback_channels)
-        .unwrap_or(1);
+    let channels = detected_channels.or(fallback_channels).unwrap_or(1);
 
     Ok(DecodedAudio {
         samples,

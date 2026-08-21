@@ -1,6 +1,6 @@
-use crate::analysis::spectrum::build_spectrogram;
 use crate::analysis::spectrum::SpectrogramData;
-use crate::analysis::stft::{compute_stft, StftSettings};
+use crate::analysis::spectrum::build_spectrogram;
+use crate::analysis::stft::{StftSettings, compute_stft};
 use crate::audio::decoder::DecodedAudio;
 
 #[derive(Debug, Clone, Default)]

@@ -43,20 +43,6 @@ impl Default for EqualizerSettings {
     }
 }
 
-impl PlaybackDspSettings {
-    pub fn octave_up(&mut self) {
-        self.pitch_shift_semitones = 12;
-    }
-
-    pub fn octave_down(&mut self) {
-        self.pitch_shift_semitones = -12;
-    }
-
-    pub fn reset_pitch(&mut self) {
-        self.pitch_shift_semitones = 0;
-    }
-}
-
 impl Default for PlaybackDspSettings {
     fn default() -> Self {
         Self {
@@ -70,7 +56,7 @@ impl Default for PlaybackDspSettings {
 
 #[cfg(test)]
 mod tests {
-    use super::{EqualizerSettings, EQ_BAND_FREQUENCIES_HZ};
+    use super::{EQ_BAND_FREQUENCIES_HZ, EqualizerSettings};
 
     #[test]
     fn equalizer_interpolates_gain_between_bands() {

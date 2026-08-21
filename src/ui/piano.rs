@@ -58,7 +58,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, height: f32) {
             Stroke::new(1.0, stroke),
         );
 
-        if midi_note % 12 == 0 {
+        if midi_note.is_multiple_of(12) {
             painter.text(
                 key_rect.left_center() + egui::vec2(8.0, 0.0),
                 Align2::LEFT_CENTER,

@@ -1,6 +1,6 @@
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -16,15 +16,12 @@ use crate::model::{PlaybackDspSettings, Track};
 pub struct AudioPlayer {
     runtime: Option<Arc<PlaybackRuntime>>,
     stream: Option<Stream>,
-    output_info: Option<OutputStreamInfo>,
 }
 
 #[derive(Clone)]
 pub struct PlayerSnapshot {
     pub transport: TransportState,
     pub position_seconds: f64,
-    pub debug_summary: String,
-    pub dsp_settings: PlaybackDspSettings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -83,7 +80,6 @@ impl AudioPlayer {
         Self {
             runtime: None,
             stream: None,
-            output_info: None,
         }
     }
 
@@ -117,10 +113,6 @@ impl AudioPlayer {
         .map_err(PlayerError::BuildStream)?;
 
         stream.play().map_err(PlayerError::PlayStream)?;
-        self.output_info = Some(OutputStreamInfo::from_config(
-            config.sample_format(),
-            &stream_config,
-        ));
         self.runtime = Some(runtime);
         self.stream = Some(stream);
         Ok(())
@@ -189,42 +181,16 @@ impl AudioPlayer {
     }
 
     pub fn snapshot(&self) -> PlayerSnapshot {
-        let output = self
-            .output_info
-            .as_ref()
-            .map(OutputStreamInfo::summary)
-            .unwrap_or_else(|| "output: not initialized".to_owned());
-
         let Some(runtime) = &self.runtime else {
             return PlayerSnapshot {
                 transport: TransportState::Stopped,
                 position_seconds: 0.0,
-                debug_summary: output,
-                dsp_settings: PlaybackDspSettings::default(),
             };
         };
-
-        let dsp_settings = runtime.current_dsp_settings();
-        let stream_metrics = runtime.dsp_engine.streaming_metrics();
 
         PlayerSnapshot {
             transport: TransportState::from_u8(runtime.transport.load(Ordering::Relaxed)),
             position_seconds: runtime.current_position_seconds(),
-            debug_summary: format!(
-                "source: {} Hz / {} ch / {:.5}x step | dsp {:.2}x / {:+} st | stream {} / {} fr / {} generated / {} underrun / {} KiB | {}",
-                runtime.dsp_engine.source_sample_rate(),
-                runtime.dsp_engine.source_channels_u16(),
-                runtime.step_ratio(),
-                dsp_settings.speed_ratio,
-                dsp_settings.pitch_shift_semitones,
-                if stream_metrics.ready { "ready" } else { "preparing" },
-                stream_metrics.buffered_frames,
-                stream_metrics.generated_frames,
-                stream_metrics.underruns,
-                stream_metrics.allocated_bytes / 1024,
-                output
-            ),
-            dsp_settings,
         }
     }
 
@@ -372,47 +338,6 @@ impl PlaybackRuntime {
 
 pub const UI_REPAINT_INTERVAL: Duration = Duration::from_millis(33);
 
-#[derive(Clone)]
-pub struct OutputStreamInfo {
-    sample_rate: u32,
-    channels: u16,
-    sample_format: &'static str,
-}
-
-impl OutputStreamInfo {
-    fn from_config(sample_format: SampleFormat, config: &StreamConfig) -> Self {
-        Self {
-            sample_rate: config.sample_rate.0,
-            channels: config.channels,
-            sample_format: sample_format_name(sample_format),
-        }
-    }
-
-    fn summary(&self) -> String {
-        format!(
-            "output: {} Hz / {} ch / {}",
-            self.sample_rate, self.channels, self.sample_format
-        )
-    }
-}
-
-fn sample_format_name(sample_format: SampleFormat) -> &'static str {
-    match sample_format {
-        SampleFormat::I8 => "i8",
-        SampleFormat::I16 => "i16",
-        SampleFormat::I24 => "i24",
-        SampleFormat::I32 => "i32",
-        SampleFormat::I64 => "i64",
-        SampleFormat::U8 => "u8",
-        SampleFormat::U16 => "u16",
-        SampleFormat::U32 => "u32",
-        SampleFormat::U64 => "u64",
-        SampleFormat::F32 => "f32",
-        SampleFormat::F64 => "f64",
-        _ => "unknown",
-    }
-}
-
 fn build_output_stream<T>(
     device: &cpal::Device,
     config: &StreamConfig,
@@ -447,11 +372,11 @@ where
     let mut streamed_frame = [0.0f32; 32];
 
     for frame in output.chunks_mut(output_channels) {
-        if let Some((loop_start, loop_end)) = loop_range {
-            if position_frames >= loop_end {
-                position_frames = loop_start;
-                runtime.dsp_engine.reset_stream_to(loop_start);
-            }
+        if let Some((loop_start, loop_end)) = loop_range
+            && position_frames >= loop_end
+        {
+            position_frames = loop_start;
+            runtime.dsp_engine.reset_stream_to(loop_start);
         }
 
         if transport != TransportState::Playing

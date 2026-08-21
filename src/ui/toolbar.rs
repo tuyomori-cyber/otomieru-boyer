@@ -129,16 +129,19 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
         .show(ctx, |ui| {
             ui.label("再生停止中に調整できます。スペクトラム表示にも反映されます。");
             ui.add_enabled_ui(state.track.is_some() && !state.playback.playing, |ui| {
-                for index in 0..EQ_BAND_COUNT {
+                for (index, frequency_hz) in EQ_BAND_FREQUENCIES_HZ.iter().copied().enumerate() {
                     ui.add(
                         egui::Slider::new(
                             &mut state.playback.dsp.equalizer.gains_db[index],
                             -12.0..=12.0,
                         )
-                        .text(format_frequency(EQ_BAND_FREQUENCIES_HZ[index]))
+                        .text(format_frequency(frequency_hz))
                         .suffix(" dB")
                         .step_by(0.5),
                     );
+                }
+                if ui.button("Reset EQ").clicked() {
+                    state.playback.dsp.equalizer.gains_db = [0.0; EQ_BAND_COUNT];
                 }
             });
         });

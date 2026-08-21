@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use rustfft::num_complex::Complex32;
 use rustfft::FftPlanner;
+use rustfft::num_complex::Complex32;
 
 #[derive(Debug, Clone, Copy)]
 pub struct StftSettings {

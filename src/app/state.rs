@@ -64,7 +64,7 @@ impl AppState {
         } else if !self.status_text.is_empty() {
             self.status_text.clone()
         } else {
-            "Open から音源を読み込む MVP の土台です。次にデコードと再生を実装します。".to_owned()
+            "Open から音源を読み込んでください。".to_owned()
         }
     }
 
@@ -256,11 +256,13 @@ mod tests {
 
     #[test]
     fn zoom_keeps_the_anchor_time_in_the_same_relative_position() {
-        let mut state = AppState::default();
-        state.track = Some(Track {
-            duration_seconds: 120.0,
-            ..Track::default()
-        });
+        let mut state = AppState {
+            track: Some(Track {
+                duration_seconds: 120.0,
+                ..Track::default()
+            }),
+            ..AppState::default()
+        };
         let old_duration = state.view_duration_seconds();
         let anchor = old_duration * 0.75;
 

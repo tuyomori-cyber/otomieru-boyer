@@ -1,12 +1,12 @@
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crate::model::{EqualizerSettings, EQ_BAND_COUNT, EQ_BAND_FREQUENCIES_HZ};
+use crate::model::{EQ_BAND_COUNT, EQ_BAND_FREQUENCIES_HZ, EqualizerSettings};
 
 const RING_FRAMES: usize = 32_768;
 const LOW_WATER_FRAMES: usize = 9_600;
@@ -357,9 +357,9 @@ impl FrameRing {
 
         let slot = head % self.capacity;
         let start = slot * self.channels;
-        for channel in 0..self.channels {
+        for (channel, sample) in frame.iter().copied().enumerate().take(self.channels) {
             // SAFETY: producer is the sole writer, and this slot is not visible until head is stored.
-            unsafe { *self.samples[start + channel].get() = frame[channel] };
+            unsafe { *self.samples[start + channel].get() = sample };
         }
         self.generations[slot].store(generation, Ordering::Release);
         self.head.store(head.wrapping_add(1), Ordering::Release);
@@ -377,9 +377,9 @@ impl FrameRing {
         let generation = self.generations[slot].load(Ordering::Acquire);
         let start = slot * self.channels;
         if generation == expected_generation {
-            for channel in 0..self.channels {
+            for (channel, sample) in destination.iter_mut().enumerate().take(self.channels) {
                 // SAFETY: consumer is the sole reader after acquiring the published head.
-                destination[channel] = unsafe { *self.samples[start + channel].get() };
+                *sample = unsafe { *self.samples[start + channel].get() };
             }
         }
         self.tail.store(tail.wrapping_add(1), Ordering::Release);
@@ -412,23 +412,11 @@ struct WorkerState {
     enabled: AtomicBool,
     shutdown: AtomicBool,
     underruns: AtomicU64,
-    generated_frames: AtomicU64,
-    prepare_complete: AtomicBool,
 }
 
 pub struct StreamingPassthrough {
     state: Arc<WorkerState>,
     worker: Option<JoinHandle<()>>,
-    channels: usize,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct StreamingMetrics {
-    pub buffered_frames: usize,
-    pub underruns: u64,
-    pub generated_frames: u64,
-    pub ready: bool,
-    pub allocated_bytes: usize,
 }
 
 impl StreamingPassthrough {
@@ -450,8 +438,6 @@ impl StreamingPassthrough {
             enabled: AtomicBool::new(true),
             shutdown: AtomicBool::new(false),
             underruns: AtomicU64::new(0),
-            generated_frames: AtomicU64::new(0),
-            prepare_complete: AtomicBool::new(false),
         });
         let worker_state = Arc::clone(&state);
         let worker = thread::Builder::new()
@@ -470,7 +456,6 @@ impl StreamingPassthrough {
         Self {
             state,
             worker: Some(worker),
-            channels,
         }
     }
 
@@ -497,7 +482,6 @@ impl StreamingPassthrough {
         self.state
             .requested_position_bits
             .store(source_position_frames.max(0.0).to_bits(), Ordering::Release);
-        self.state.prepare_complete.store(false, Ordering::Release);
         self.state.generation.fetch_add(1, Ordering::AcqRel);
     }
 
@@ -515,17 +499,6 @@ impl StreamingPassthrough {
     pub fn discard_stale_frames(&self) {
         let generation = self.state.generation.load(Ordering::Acquire);
         self.state.ring.discard_stale(generation);
-    }
-
-    pub fn metrics(&self) -> StreamingMetrics {
-        StreamingMetrics {
-            buffered_frames: self.state.ring.len(),
-            underruns: self.state.underruns.load(Ordering::Relaxed),
-            generated_frames: self.state.generated_frames.load(Ordering::Relaxed),
-            ready: self.state.prepare_complete.load(Ordering::Acquire),
-            allocated_bytes: RING_FRAMES * self.channels * std::mem::size_of::<f32>()
-                + RING_FRAMES * std::mem::size_of::<u64>(),
-        }
     }
 }
 
@@ -606,12 +579,6 @@ fn run_worker(
             if !state.ring.try_push(active_generation, &frame) {
                 break;
             }
-            state.generated_frames.fetch_add(1, Ordering::Relaxed);
-        }
-        if state.generation.load(Ordering::Acquire) == active_generation
-            && state.ring.len() >= LOW_WATER_FRAMES
-        {
-            state.prepare_complete.store(true, Ordering::Release);
         }
     }
 }
@@ -636,7 +603,7 @@ fn interpolate(
 
 #[cfg(test)]
 mod tests {
-    use super::{interpolate, EqualizerSettings, FrameRing, RubberBandBackend};
+    use super::{EqualizerSettings, FrameRing, RubberBandBackend, interpolate};
 
     #[test]
     fn ring_discards_a_frame_from_an_old_generation() {

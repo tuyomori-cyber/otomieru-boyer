@@ -197,18 +197,16 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, height: f32) -> SpectrogramActi
             }
 
             let pointer_down = ui.input(|input| input.pointer.primary_down());
-            if pointer_down {
-                if let Some(track) = &state.track {
-                    if track.spectrogram.is_some() {
-                        let pitch_t = ((content_rect.bottom() - pointer_pos.y)
-                            / content_rect.height())
-                        .clamp(0.0, 0.999_999);
-                        let pitch_view = state.pitch_view();
-                        let midi_note = pitch_view.min_midi_note
-                            + (pitch_t * pitch_view.pitch_count() as f32).floor() as usize;
-                        actions.preview_midi_note = Some(midi_note as u8);
-                    }
-                }
+            if pointer_down
+                && let Some(track) = &state.track
+                && track.spectrogram.is_some()
+            {
+                let pitch_t = ((content_rect.bottom() - pointer_pos.y) / content_rect.height())
+                    .clamp(0.0, 0.999_999);
+                let pitch_view = state.pitch_view();
+                let midi_note = pitch_view.min_midi_note
+                    + (pitch_t * pitch_view.pitch_count() as f32).floor() as usize;
+                actions.preview_midi_note = Some(midi_note as u8);
             } else if state.preview_tone_active {
                 actions.stop_preview = true;
             }
@@ -335,7 +333,7 @@ fn draw_pitch_guides(
 ) {
     let pitches = pitch_view.pitch_count();
     for index in 0..=pitches {
-        if (pitch_view.min_midi_note + index) % 12 != 0 {
+        if !(pitch_view.min_midi_note + index).is_multiple_of(12) {
             continue;
         }
         let y = egui::lerp(
