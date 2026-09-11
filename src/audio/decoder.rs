@@ -1,5 +1,6 @@
 use std::fmt;
 use std::fs::File;
+use std::io::Cursor;
 use std::path::Path;
 
 use symphonia::core::audio::{AudioBufferRef, SampleBuffer, Signal};
@@ -63,13 +64,30 @@ impl From<SymphoniaError> for DecoderError {
 pub fn decode_file(path: impl AsRef<Path>) -> Result<DecodedAudio, DecoderError> {
     let path = path.as_ref();
     let file = File::open(path)?;
-    let media_source = MediaSourceStream::new(Box::new(file), Default::default());
-
     let mut hint = Hint::new();
     if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
         hint.with_extension(extension);
     }
 
+    decode_media_source(
+        MediaSourceStream::new(Box::new(file), Default::default()),
+        hint,
+    )
+}
+
+pub fn decode_wav_bytes(bytes: &'static [u8]) -> Result<DecodedAudio, DecoderError> {
+    let mut hint = Hint::new();
+    hint.with_extension("wav");
+    decode_media_source(
+        MediaSourceStream::new(Box::new(Cursor::new(bytes)), Default::default()),
+        hint,
+    )
+}
+
+fn decode_media_source(
+    media_source: MediaSourceStream,
+    hint: Hint,
+) -> Result<DecodedAudio, DecoderError> {
     let probed = symphonia::default::get_probe().format(
         &hint,
         media_source,

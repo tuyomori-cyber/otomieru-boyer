@@ -1,6 +1,7 @@
 use eframe::egui;
 
 use crate::app::state::{AppState, PITCH_CLASS_NAMES, ScalePreset};
+use crate::audio::preview_tone::PreviewTimbre;
 use crate::model::{EQ_BAND_COUNT, EQ_BAND_FREQUENCIES_HZ};
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -84,15 +85,6 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
 
             ui.separator();
 
-            if ui
-                .add_enabled(dsp_controls_enabled, egui::Button::new("EQ"))
-                .clicked()
-            {
-                state.equalizer_popup_open = true;
-            }
-
-            ui.separator();
-
             ui.checkbox(&mut state.playback.loop_enabled, "Loop");
 
             ui.separator();
@@ -104,9 +96,16 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
                     .step_by(1.0),
             );
 
-            if ui.button("基音強調").clicked() {
-                state.pitch_focus_popup_open = true;
+            if ui.button("調整・設定").clicked() {
+                state.settings_popup_open = true;
             }
+
+            ui.add(
+                egui::Slider::new(&mut state.preview_tone_amplitude, 0.0..=0.5)
+                    .text("試聴音量")
+                    .suffix("")
+                    .custom_formatter(|amplitude, _| format!("{:.0}%", amplitude * 100.0)),
+            );
 
             ui.separator();
 
@@ -126,90 +125,108 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
         ui.add_space(4.0);
     });
 
-    let mut equalizer_popup_open = state.equalizer_popup_open;
-    egui::Window::new("Equalizer")
-        .open(&mut equalizer_popup_open)
-        .resizable(false)
-        .show(ctx, |ui| {
-            ui.label("再生停止中に調整できます。スペクトラム表示にも反映されます。");
-            ui.add_enabled_ui(state.track.is_some() && !state.playback.playing, |ui| {
-                for (index, frequency_hz) in EQ_BAND_FREQUENCIES_HZ.iter().copied().enumerate() {
-                    ui.add(
-                        egui::Slider::new(
-                            &mut state.playback.dsp.equalizer.gains_db[index],
-                            -12.0..=12.0,
-                        )
-                        .text(format_frequency(frequency_hz))
-                        .suffix(" dB")
-                        .step_by(0.5),
-                    );
-                }
-                if ui.button("Reset EQ").clicked() {
-                    state.playback.dsp.equalizer.gains_db = [0.0; EQ_BAND_COUNT];
-                }
-            });
-        });
-    state.equalizer_popup_open = equalizer_popup_open;
-
-    let mut pitch_focus_popup_open = state.pitch_focus_popup_open;
-    egui::Window::new("基音強調")
-        .open(&mut pitch_focus_popup_open)
-        .resizable(false)
-        .show(ctx, |ui| {
-            ui.label("倍音列から基音候補を強調します。再生音には影響しません。");
-            ui.add(
-                egui::Slider::new(&mut state.fundamental_emphasis, 0.0..=100.0)
-                    .text("強調")
-                    .suffix(" %")
-                    .step_by(5.0),
-            );
-
-            let mut scale_changed = false;
-            ui.horizontal(|ui| {
-                egui::ComboBox::from_label("Root")
-                    .selected_text(PITCH_CLASS_NAMES[state.scale_root])
-                    .show_ui(ui, |ui| {
-                        for (index, name) in PITCH_CLASS_NAMES.iter().enumerate() {
-                            scale_changed |= ui
-                                .selectable_value(&mut state.scale_root, index, *name)
-                                .changed();
-                        }
-                    });
-                egui::ComboBox::from_label("Scale")
-                    .selected_text(state.scale_preset.label())
-                    .show_ui(ui, |ui| {
-                        for preset in ScalePreset::ALL {
-                            scale_changed |= ui
-                                .selectable_value(&mut state.scale_preset, preset, preset.label())
-                                .changed();
-                        }
-                    });
-            });
-            if scale_changed {
-                state.apply_scale_preset();
-            }
-
-            ui.label("強調する音（クリックで個別に変更）");
-            egui::Grid::new("emphasized_pitch_classes")
-                .num_columns(4)
-                .show(ui, |ui| {
-                    for (index, name) in PITCH_CLASS_NAMES.iter().enumerate() {
-                        ui.checkbox(&mut state.emphasized_pitch_classes[index], *name);
-                        if index % 4 == 3 {
-                            ui.end_row();
-                        }
-                    }
-                });
-            ui.add(
-                egui::Slider::new(&mut state.unemphasized_pitch_attenuation, 0.0..=100.0)
-                    .text("指定外の減衰")
-                    .suffix(" %")
-                    .step_by(5.0),
-            );
-        });
-    state.pitch_focus_popup_open = pitch_focus_popup_open;
+    show_settings_dialog(ctx, state);
 
     actions
+}
+
+fn show_settings_dialog(ctx: &egui::Context, state: &mut AppState) {
+    let mut settings_popup_open = state.settings_popup_open;
+    egui::Window::new("調整・設定")
+        .open(&mut settings_popup_open)
+        .resizable(false)
+        .default_width(720.0)
+        .show(ctx, |ui| {
+            ui.columns(2, |columns| {
+                columns[0].heading("EQ");
+                show_equalizer_settings(&mut columns[0], state);
+                columns[1].heading("基音強調");
+                show_fundamental_settings(&mut columns[1], state);
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.heading("音色");
+                show_timbre_settings(ui, state);
+            });
+        });
+    state.settings_popup_open = settings_popup_open;
+}
+
+fn show_equalizer_settings(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.label("再生停止中に調整できます。表示にも反映されます。");
+    ui.add_enabled_ui(state.track.is_some() && !state.playback.playing, |ui| {
+        for (index, frequency_hz) in EQ_BAND_FREQUENCIES_HZ.iter().copied().enumerate() {
+            ui.add(
+                egui::Slider::new(
+                    &mut state.playback.dsp.equalizer.gains_db[index],
+                    -12.0..=12.0,
+                )
+                .text(format_frequency(frequency_hz))
+                .suffix(" dB")
+                .step_by(0.5),
+            );
+        }
+        if ui.button("Reset EQ").clicked() {
+            state.playback.dsp.equalizer.gains_db = [0.0; EQ_BAND_COUNT];
+        }
+    });
+}
+
+fn show_fundamental_settings(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.label("倍音列から基音候補を強調します。再生音には影響しません。");
+    ui.add(
+        egui::Slider::new(&mut state.fundamental_emphasis, 0.0..=100.0)
+            .text("強調")
+            .suffix(" %")
+            .step_by(5.0),
+    );
+    let mut scale_changed = false;
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_label("Root")
+            .selected_text(PITCH_CLASS_NAMES[state.scale_root])
+            .show_ui(ui, |ui| {
+                for (index, name) in PITCH_CLASS_NAMES.iter().enumerate() {
+                    scale_changed |= ui
+                        .selectable_value(&mut state.scale_root, index, *name)
+                        .changed();
+                }
+            });
+        egui::ComboBox::from_label("Scale")
+            .selected_text(state.scale_preset.label())
+            .show_ui(ui, |ui| {
+                for preset in ScalePreset::ALL {
+                    scale_changed |= ui
+                        .selectable_value(&mut state.scale_preset, preset, preset.label())
+                        .changed();
+                }
+            });
+    });
+    if scale_changed {
+        state.apply_scale_preset();
+    }
+    ui.label("強調する音（クリックで個別に変更）");
+    egui::Grid::new("emphasized_pitch_classes")
+        .num_columns(4)
+        .show(ui, |ui| {
+            for (index, name) in PITCH_CLASS_NAMES.iter().enumerate() {
+                ui.checkbox(&mut state.emphasized_pitch_classes[index], *name);
+                if index % 4 == 3 {
+                    ui.end_row();
+                }
+            }
+        });
+    ui.add(
+        egui::Slider::new(&mut state.unemphasized_pitch_attenuation, 0.0..=100.0)
+            .text("指定外の減衰")
+            .suffix(" %")
+            .step_by(5.0),
+    );
+}
+
+fn show_timbre_settings(ui: &mut egui::Ui, state: &mut AppState) {
+    for timbre in PreviewTimbre::ALL {
+        ui.radio_value(&mut state.preview_timbre, timbre, timbre.label());
+    }
 }
 
 fn format_frequency(frequency_hz: f32) -> String {

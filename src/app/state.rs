@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::audio::preview_tone::PreviewTimbre;
 use crate::model::{PlaybackState, Selection, Track};
 
 const MIN_VIEW_SEGMENTS: usize = 8;
@@ -101,10 +102,12 @@ pub struct AppState {
     pub emphasized_pitch_classes: [bool; 12],
     /// 指定外の音程を表示上で減衰する割合。0 は減衰なし、100 は非表示。
     pub unemphasized_pitch_attenuation: f32,
-    pub pitch_focus_popup_open: bool,
     /// スペクトログラムを押下している間に試聴している音。MIDI番号をUI間で共有する。
     pub preview_midi_note: Option<u8>,
-    pub equalizer_popup_open: bool,
+    /// スペクトログラム押下中の試聴音の出力振幅。
+    pub preview_tone_amplitude: f32,
+    pub preview_timbre: PreviewTimbre,
+    pub settings_popup_open: bool,
 }
 
 impl AppState {
@@ -193,6 +196,10 @@ impl AppState {
 
     pub fn set_view_start_seconds(&mut self, seconds: f64) {
         self.view_start_seconds = self.clamped_view_start_seconds(seconds);
+    }
+
+    pub fn reset_view_to_start(&mut self) {
+        self.view_start_seconds = 0.0;
     }
 
     pub fn zoom_view_at(&mut self, anchor_seconds: f64, factor: f64) {
@@ -307,9 +314,10 @@ impl Default for AppState {
                 true, false, true, false, true, true, false, true, false, true, false, true,
             ],
             unemphasized_pitch_attenuation: 0.0,
-            pitch_focus_popup_open: false,
             preview_midi_note: None,
-            equalizer_popup_open: false,
+            preview_tone_amplitude: 0.16,
+            preview_timbre: PreviewTimbre::Piano,
+            settings_popup_open: false,
         }
     }
 }
@@ -371,5 +379,21 @@ mod tests {
                 false, true, true, false, true, false, true, true, false, true, false, true
             ]
         );
+    }
+
+    #[test]
+    fn resetting_the_view_returns_the_spectrogram_to_the_start() {
+        let mut state = AppState {
+            track: Some(Track {
+                duration_seconds: 120.0,
+                ..Track::default()
+            }),
+            view_start_seconds: 60.0,
+            ..AppState::default()
+        };
+
+        state.reset_view_to_start();
+
+        assert_eq!(state.current_view_start_seconds(), 0.0);
     }
 }

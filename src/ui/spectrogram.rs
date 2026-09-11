@@ -1,4 +1,4 @@
-use eframe::egui::{self, Align2, Color32, FontId, Sense, Stroke, Vec2};
+use eframe::egui::{self, Align2, Color32, FontId, Sense, Stroke, TextureHandle, Vec2};
 
 use crate::app::state::AppState;
 
@@ -12,7 +12,41 @@ pub struct SpectrogramActions {
     pub stop_preview: bool,
 }
 
-pub fn show(ui: &mut egui::Ui, state: &AppState, height: f32) -> SpectrogramActions {
+#[derive(Default)]
+pub struct SpectrogramCache {
+    key: Option<SpectrogramCacheKey>,
+    texture: Option<TextureHandle>,
+}
+
+impl SpectrogramCache {
+    pub fn clear(&mut self) {
+        self.key = None;
+        self.texture = None;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SpectrogramCacheKey {
+    data_address: usize,
+    view_start_bits: u64,
+    view_end_bits: u64,
+    first_pitch: usize,
+    last_pitch_exclusive: usize,
+    width_pixels: usize,
+    height_pixels: usize,
+    gain_bits: u32,
+    emphasis_bits: u32,
+    emphasized_pitch_classes: [bool; 12],
+    attenuation_bits: u32,
+    equalizer_gain_bits: [u32; 5],
+}
+
+pub fn show(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    height: f32,
+    cache: &mut SpectrogramCache,
+) -> SpectrogramActions {
     let mut actions = SpectrogramActions::default();
     let pixels_per_point = ui.ctx().pixels_per_point();
     let desired_size = Vec2::new((ui.available_width() - 8.0).max(240.0), height.max(240.0));
@@ -36,7 +70,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, height: f32) -> SpectrogramActi
         ((state.display_playhead_position_seconds - view_start) / view_duration).clamp(0.0, 1.0);
     let current_x = egui::lerp(rect.left()..=rect.right(), normalized as f32);
 
-    draw_spectrogram_body(&painter, rect, state, view_start, view_end);
+    draw_spectrogram_body(&painter, rect, state, view_start, view_end, cache);
 
     let page_bar_height = 16.0;
     let page_bar_margin = 14.0;
@@ -231,6 +265,7 @@ fn draw_spectrogram_body(
     state: &AppState,
     view_start: f64,
     view_end: f64,
+    cache: &mut SpectrogramCache,
 ) {
     let Some(track) = &state.track else {
         draw_placeholder_grid(painter, rect);
@@ -266,66 +301,48 @@ fn draw_spectrogram_body(
         .saturating_add(1)
         .saturating_sub(spectrogram.min_midi_note)
         .min(spectrogram.pitches);
-    let visible_pitches = last_pitch_exclusive.saturating_sub(first_pitch).max(1);
-
-    for local_frame in 0..visible_frames {
-        let frame_index = start_frame + local_frame;
-        let x0 = egui::lerp(
-            content_rect.left()..=content_rect.right(),
-            local_frame as f32 / visible_frames as f32,
+    let pixels_per_point = painter.ctx().pixels_per_point();
+    let width_pixels = (content_rect.width() * pixels_per_point).round().max(1.0) as usize;
+    let height_pixels = (content_rect.height() * pixels_per_point).round().max(1.0) as usize;
+    let key = SpectrogramCacheKey {
+        data_address: spectrogram.intensities.as_ptr() as usize,
+        view_start_bits: view_start.to_bits(),
+        view_end_bits: view_end.to_bits(),
+        first_pitch,
+        last_pitch_exclusive,
+        width_pixels,
+        height_pixels,
+        gain_bits: state.spectrogram_gain_db.to_bits(),
+        emphasis_bits: state.fundamental_emphasis.to_bits(),
+        emphasized_pitch_classes: state.emphasized_pitch_classes,
+        attenuation_bits: state.unemphasized_pitch_attenuation.to_bits(),
+        equalizer_gain_bits: state.playback.dsp.equalizer.gains_db.map(f32::to_bits),
+    };
+    if cache.key.as_ref() != Some(&key) {
+        let image = render_spectrogram_image(
+            spectrogram,
+            state,
+            start_frame,
+            visible_frames,
+            first_pitch,
+            last_pitch_exclusive,
+            width_pixels,
+            height_pixels,
         );
-        let x1 = egui::lerp(
-            content_rect.left()..=content_rect.right(),
-            (local_frame + 1) as f32 / visible_frames as f32,
+        cache.texture = Some(painter.ctx().load_texture(
+            "spectrogram-body",
+            image,
+            egui::TextureOptions::NEAREST,
+        ));
+        cache.key = Some(key);
+    }
+    if let Some(texture) = &cache.texture {
+        painter.image(
+            texture.id(),
+            content_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
         );
-
-        for pitch in first_pitch..last_pitch_exclusive {
-            let midi_note = spectrogram.min_midi_note + pitch;
-            let is_emphasized_pitch = state.emphasized_pitch_classes[midi_note % 12];
-            let equalizer_gain = state
-                .playback
-                .dsp
-                .equalizer
-                .gain_for_frequency_hz(midi_to_frequency_hz(midi_note));
-            let intensity = apply_display_gain(
-                spectrogram.intensity_at(frame_index, pitch),
-                state.spectrogram_gain_db,
-            ) * equalizer_gain;
-            let fundamental_strength = apply_display_gain(
-                spectrogram.fundamental_strength_at(frame_index, pitch),
-                state.spectrogram_gain_db,
-            ) * equalizer_gain;
-            let intensity = apply_fundamental_emphasis(
-                intensity,
-                fundamental_strength,
-                is_emphasized_pitch,
-                state.fundamental_emphasis,
-            );
-            let intensity = apply_unemphasized_pitch_attenuation(
-                intensity,
-                is_emphasized_pitch,
-                state.unemphasized_pitch_attenuation,
-            );
-            if intensity <= 0.01 {
-                continue;
-            }
-
-            let y0 = egui::lerp(
-                content_rect.bottom()..=content_rect.top(),
-                (pitch - first_pitch) as f32 / visible_pitches as f32,
-            );
-            let y1 = egui::lerp(
-                content_rect.bottom()..=content_rect.top(),
-                (pitch - first_pitch + 1) as f32 / visible_pitches as f32,
-            );
-
-            let color = spectrogram_color(intensity);
-            painter.rect_filled(
-                egui::Rect::from_min_max(egui::pos2(x0, y1), egui::pos2(x1.max(x0 + 1.0), y0)),
-                0.0,
-                color,
-            );
-        }
     }
 
     draw_pitch_guides(painter, content_rect, pitch_view);
@@ -349,6 +366,83 @@ fn draw_placeholder_grid(painter: &egui::Painter, rect: egui::Rect) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn render_spectrogram_image(
+    spectrogram: &crate::analysis::spectrum::SpectrogramData,
+    state: &AppState,
+    start_frame: usize,
+    visible_frames: usize,
+    first_pitch: usize,
+    last_pitch_exclusive: usize,
+    width_pixels: usize,
+    height_pixels: usize,
+) -> egui::ColorImage {
+    let background = Color32::from_rgb(15, 24, 35);
+    let mut image = egui::ColorImage::new(
+        [width_pixels, height_pixels],
+        vec![background; width_pixels * height_pixels],
+    );
+    let visible_pitches = last_pitch_exclusive.saturating_sub(first_pitch).max(1);
+    let columns = drawing_column_count(visible_frames, width_pixels as f32, 1.0);
+    let display_gain = 10.0_f32.powf(state.spectrogram_gain_db / 20.0);
+
+    for pitch in first_pitch..last_pitch_exclusive {
+        let midi_note = spectrogram.min_midi_note + pitch;
+        let is_emphasized_pitch = state.emphasized_pitch_classes[midi_note % 12];
+        let equalizer_gain = state
+            .playback
+            .dsp
+            .equalizer
+            .gain_for_frequency_hz(midi_to_frequency_hz(midi_note));
+        let y_start = height_pixels - (pitch - first_pitch + 1) * height_pixels / visible_pitches;
+        let y_end = height_pixels - (pitch - first_pitch) * height_pixels / visible_pitches;
+
+        for column in 0..columns {
+            let frames = column_frame_range(column, columns, visible_frames);
+            // Final display strength is aggregated per column so a peak in a
+            // short analysis frame remains visible when zoomed out.
+            let intensity = peak_display_strength(frames, |local_frame| {
+                let frame_index = start_frame + local_frame;
+                let raw = (spectrogram.intensity_at(frame_index, pitch) * display_gain)
+                    .clamp(0.0, 1.0)
+                    * equalizer_gain;
+                let fundamental = if state.fundamental_emphasis > 0.0 {
+                    (spectrogram.fundamental_strength_at(frame_index, pitch) * display_gain)
+                        .clamp(0.0, 1.0)
+                        * equalizer_gain
+                } else {
+                    0.0
+                };
+                apply_unemphasized_pitch_attenuation(
+                    apply_fundamental_emphasis(
+                        raw,
+                        fundamental,
+                        is_emphasized_pitch,
+                        state.fundamental_emphasis,
+                    ),
+                    is_emphasized_pitch,
+                    state.unemphasized_pitch_attenuation,
+                )
+            });
+            if intensity <= 0.01 {
+                continue;
+            }
+
+            let x_start = column * width_pixels / columns;
+            let x_end = (column + 1) * width_pixels / columns;
+            let color = composite_spectrogram_color(background, intensity);
+            for y in y_start..y_end {
+                let row = y * width_pixels;
+                for x in x_start..x_end {
+                    image.pixels[row + x] = color;
+                }
+            }
+        }
+    }
+
+    image
+}
+
 fn draw_pitch_guides(
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -370,11 +464,15 @@ fn draw_pitch_guides(
     }
 }
 
-fn spectrogram_color(intensity: f32) -> Color32 {
-    let t = intensity.clamp(0.0, 1.0);
-    let (r, g, b) = thermal_gradient(t);
-    let a = egui::lerp(20.0..=255.0, t) as u8;
-    Color32::from_rgba_premultiplied(r, g, b, a)
+fn composite_spectrogram_color(background: Color32, intensity: f32) -> Color32 {
+    let intensity = intensity.clamp(0.0, 1.0);
+    let (r, g, b) = thermal_gradient(intensity);
+    let alpha = egui::lerp(20.0..=255.0, intensity) / 255.0;
+    Color32::from_rgb(
+        egui::lerp(background.r() as f32..=r as f32, alpha) as u8,
+        egui::lerp(background.g() as f32..=g as f32, alpha) as u8,
+        egui::lerp(background.b() as f32..=b as f32, alpha) as u8,
+    )
 }
 
 fn draw_loop_markers(
@@ -437,9 +535,20 @@ fn subpixel_columns(x: f32, pixels_per_point: f32) -> [(f32, f32); 2] {
     ]
 }
 
-fn apply_display_gain(intensity: f32, gain_db: f32) -> f32 {
-    let gain = 10.0_f32.powf(gain_db / 20.0);
-    (intensity * gain).clamp(0.0, 1.0)
+fn drawing_column_count(frames: usize, width_points: f32, pixels_per_point: f32) -> usize {
+    let physical_columns = (width_points * pixels_per_point).floor().max(1.0) as usize;
+    frames.min(physical_columns)
+}
+
+fn column_frame_range(column: usize, columns: usize, frames: usize) -> std::ops::Range<usize> {
+    column * frames / columns..(column + 1) * frames / columns
+}
+
+fn peak_display_strength(
+    frames: std::ops::Range<usize>,
+    strength_at: impl FnMut(usize) -> f32,
+) -> f32 {
+    frames.map(strength_at).fold(0.0, f32::max)
 }
 
 fn apply_fundamental_emphasis(
@@ -505,8 +614,37 @@ fn lerp_rgb(from: (u8, u8, u8), to: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_fundamental_emphasis, apply_unemphasized_pitch_attenuation, subpixel_columns,
+        apply_fundamental_emphasis, apply_unemphasized_pitch_attenuation, column_frame_range,
+        drawing_column_count, peak_display_strength, subpixel_columns,
     };
+
+    #[test]
+    fn downsampling_covers_every_frame_once_and_preserves_brief_peaks() {
+        let strengths = [0.0, 0.9, 0.0, 0.2, 0.1, 0.0, 1.0];
+        let columns = drawing_column_count(strengths.len(), 3.0, 1.0);
+        let mut visited = Vec::new();
+        let peaks: Vec<_> = (0..columns)
+            .map(|column| {
+                peak_display_strength(column_frame_range(column, columns, strengths.len()), |i| {
+                    visited.push(i);
+                    strengths[i]
+                })
+            })
+            .collect();
+        assert_eq!(visited, (0..strengths.len()).collect::<Vec<_>>());
+        assert_eq!(peaks, vec![0.9, 0.2, 1.0]);
+    }
+
+    #[test]
+    fn drawing_resolution_respects_dpi_and_keeps_zoomed_frames_separate() {
+        assert_eq!(drawing_column_count(10000, 100.0, 2.0), 200);
+        assert_eq!(drawing_column_count(10000, 100.0, 1.0), 100);
+        assert_eq!(drawing_column_count(5, 100.0, 2.0), 5);
+        assert_eq!(drawing_column_count(5, 0.5, 1.0), 1);
+        for frame in 0..5 {
+            assert_eq!(column_frame_range(frame, 5, 5), frame..frame + 1);
+        }
+    }
 
     #[test]
     fn fundamental_emphasis_is_raw_at_zero_percent() {

@@ -18,6 +18,7 @@ pub struct OtomieruApp {
     last_applied_dsp_settings: Option<PlaybackDspSettings>,
     playhead_interpolator: PlayheadInterpolator,
     ui_frame_monitor: UiFrameMonitor,
+    spectrogram_cache: spectrogram::SpectrogramCache,
 }
 
 impl OtomieruApp {
@@ -30,6 +31,7 @@ impl OtomieruApp {
             last_applied_dsp_settings: None,
             playhead_interpolator: PlayheadInterpolator::default(),
             ui_frame_monitor: UiFrameMonitor::default(),
+            spectrogram_cache: spectrogram::SpectrogramCache::default(),
         }
     }
 
@@ -44,6 +46,7 @@ impl OtomieruApp {
 
         self.state
             .set_status(format!("読み込み中: {}", path.display()));
+        self.spectrogram_cache.clear();
 
         match decode_file(&path) {
             Ok(decoded) => {
@@ -142,6 +145,7 @@ impl eframe::App for OtomieruApp {
             self.player.seek_to_start();
             self.state.playback.position_seconds = 0.0;
             self.state.display_playhead_position_seconds = 0.0;
+            self.state.reset_view_to_start();
             self.playhead_interpolator.reset(0.0);
         }
         if actions.play_pause_requested || (space_pressed && self.state.track.is_some()) {
@@ -187,8 +191,12 @@ impl eframe::App for OtomieruApp {
                 let visualization_height = (ui.available_height() - 32.0).max(240.0);
                 ui.horizontal(|ui| {
                     piano::show(ui, &self.state, visualization_height);
-                    let spectrogram_actions =
-                        spectrogram::show(ui, &self.state, visualization_height);
+                    let spectrogram_actions = spectrogram::show(
+                        ui,
+                        &self.state,
+                        visualization_height,
+                        &mut self.spectrogram_cache,
+                    );
                     if let Some(seconds) = spectrogram_actions.seek_seconds {
                         self.player.seek_to_seconds(seconds);
                         self.state.playback.position_seconds = seconds;
@@ -208,7 +216,11 @@ impl eframe::App for OtomieruApp {
                         let preview_changed = self.state.preview_midi_note != Some(midi_note);
                         self.state.preview_midi_note = Some(midi_note);
                         if let Some(preview_tone_player) = &self.preview_tone_player {
-                            preview_tone_player.update_preview(PreviewToneRequest { midi_note });
+                            preview_tone_player.update_preview(PreviewToneRequest {
+                                midi_note,
+                                timbre: self.state.preview_timbre,
+                                amplitude: self.state.preview_tone_amplitude,
+                            });
                         }
                         if preview_changed {
                             ctx.request_repaint();

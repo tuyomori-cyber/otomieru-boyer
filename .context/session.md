@@ -3,10 +3,14 @@
 Updated: 1789121200
 
 Now:
-- Done: 縮小時の実測11 FPS / 138 msと、時間方向の最大値集約による描画最適化方針をToDo・README・仕様書へ反映
+- Done: 時間方向の最大値集約とスペクトログラム画像キャッシュを実装
+- Done: スペクトログラム押下中の矩形波の試聴音量調整を実装
+- Done: CC0のFreePats Piano FB smallを同梱し、スペクトログラム押下時のピアノ試聴を実装
+- Done: CC0のFreePats Synth Strings #1を同梱し、音色として選択可能にした
+- Done: EQ・基音強調・音色を1画面へ統合し、EQと基音強調は常時並べて表示
 
 Next:
-- 表示幅の各描画列へ時間フレームを集約するスペクトログラム描画を実装
+- 最大縮小時と高倍率時で、UI FPS・再生線の追従を実機確認
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.
@@ -19,4 +23,3 @@ Relevant:
 - file: .context/session.md
 - file: .context/turns.jsonl
 - file: .context/root-todo.md
-
