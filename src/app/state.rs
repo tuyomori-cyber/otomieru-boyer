@@ -9,6 +9,40 @@ const MIN_VIEW_DURATION_SECONDS: f64 = 0.25;
 const MAX_VIEW_ZOOM: f64 = 64.0;
 const MAX_PITCH_ZOOM: f64 = 16.0;
 
+pub const PITCH_CLASS_NAMES: [&str; 12] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalePreset {
+    Major,
+    Minor,
+    Pentatonic,
+    Chromatic,
+}
+
+impl ScalePreset {
+    pub const ALL: [Self; 4] = [Self::Major, Self::Minor, Self::Pentatonic, Self::Chromatic];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Major => "Major",
+            Self::Minor => "Minor",
+            Self::Pentatonic => "Pentatonic",
+            Self::Chromatic => "Chromatic",
+        }
+    }
+
+    fn intervals(self) -> &'static [usize] {
+        match self {
+            Self::Major => &[0, 2, 4, 5, 7, 9, 11],
+            Self::Minor => &[0, 2, 3, 5, 7, 8, 10],
+            Self::Pentatonic => &[0, 2, 4, 7, 9],
+            Self::Chromatic => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct SpectrogramView {
     pub duration_seconds: f64,
@@ -19,6 +53,23 @@ pub struct SpectrogramView {
 pub struct PitchView {
     pub min_midi_note: usize,
     pub max_midi_note: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct UiFrameMetrics {
+    pub frames_per_second: f32,
+    pub frame_time_ms: f32,
+    pub pixels_per_point: f32,
+}
+
+impl Default for UiFrameMetrics {
+    fn default() -> Self {
+        Self {
+            frames_per_second: 0.0,
+            frame_time_ms: 0.0,
+            pixels_per_point: 1.0,
+        }
+    }
 }
 
 impl PitchView {
@@ -32,6 +83,9 @@ impl PitchView {
 pub struct AppState {
     pub track: Option<Track>,
     pub playback: PlaybackState,
+    pub ui_frame_metrics: UiFrameMetrics,
+    /// 音声コールバックの位置をUI用に時間補間した再生位置。
+    pub display_playhead_position_seconds: f64,
     pub view_start_seconds: f64,
     pub view_zoom: f64,
     pub pitch_view_center_midi: f64,
@@ -40,7 +94,16 @@ pub struct AppState {
     pub loaded_file_path: Option<PathBuf>,
     pub status_text: String,
     pub spectrogram_gain_db: f32,
-    pub preview_tone_active: bool,
+    /// Raw表示から基音候補表示へ寄せる割合。0 はRaw表示、100 は最大強調。
+    pub fundamental_emphasis: f32,
+    pub scale_root: usize,
+    pub scale_preset: ScalePreset,
+    pub emphasized_pitch_classes: [bool; 12],
+    /// 指定外の音程を表示上で減衰する割合。0 は減衰なし、100 は非表示。
+    pub unemphasized_pitch_attenuation: f32,
+    pub pitch_focus_popup_open: bool,
+    /// スペクトログラムを押下している間に試聴している音。MIDI番号をUI間で共有する。
+    pub preview_midi_note: Option<u8>,
     pub equalizer_popup_open: bool,
 }
 
@@ -72,10 +135,18 @@ impl AppState {
         self.status_text = status.into();
     }
 
+    pub fn apply_scale_preset(&mut self) {
+        self.emphasized_pitch_classes = [false; 12];
+        for interval in self.scale_preset.intervals() {
+            self.emphasized_pitch_classes[(self.scale_root + interval) % 12] = true;
+        }
+    }
+
     pub fn set_loaded_track(&mut self, path: PathBuf, track: Track) {
         self.loaded_file_path = Some(path);
         self.track = Some(track);
         self.playback = PlaybackState::default();
+        self.display_playhead_position_seconds = 0.0;
         self.view_start_seconds = 0.0;
         self.view_zoom = 1.0;
         self.pitch_view_center_midi = pitch_midpoint(&self.track);
@@ -219,6 +290,8 @@ impl Default for AppState {
         Self {
             track: None,
             playback: PlaybackState::default(),
+            ui_frame_metrics: UiFrameMetrics::default(),
+            display_playhead_position_seconds: 0.0,
             view_start_seconds: 0.0,
             view_zoom: 1.0,
             pitch_view_center_midi: pitch_midpoint(&None),
@@ -227,7 +300,15 @@ impl Default for AppState {
             loaded_file_path: None,
             status_text: String::new(),
             spectrogram_gain_db: 0.0,
-            preview_tone_active: false,
+            fundamental_emphasis: 0.0,
+            scale_root: 0,
+            scale_preset: ScalePreset::Major,
+            emphasized_pitch_classes: [
+                true, false, true, false, true, true, false, true, false, true, false, true,
+            ],
+            unemphasized_pitch_attenuation: 0.0,
+            pitch_focus_popup_open: false,
+            preview_midi_note: None,
             equalizer_popup_open: false,
         }
     }
@@ -251,7 +332,7 @@ fn pitch_midpoint(track: &Option<Track>) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppState, MIN_VIEW_DURATION_SECONDS};
+    use super::{AppState, MIN_VIEW_DURATION_SECONDS, ScalePreset};
     use crate::model::Track;
 
     #[test]
@@ -272,5 +353,23 @@ mod tests {
             (anchor - state.current_view_start_seconds()) / state.view_duration_seconds();
         assert!((relative - 0.75).abs() < 1e-6);
         assert!(state.view_duration_seconds() >= MIN_VIEW_DURATION_SECONDS);
+    }
+
+    #[test]
+    fn applying_a_scale_preset_updates_the_pitch_classes() {
+        let mut state = AppState {
+            scale_root: 2,
+            scale_preset: ScalePreset::Major,
+            ..AppState::default()
+        };
+
+        state.apply_scale_preset();
+
+        assert_eq!(
+            state.emphasized_pitch_classes,
+            [
+                false, true, true, false, true, false, true, true, false, true, false, true
+            ]
+        );
     }
 }

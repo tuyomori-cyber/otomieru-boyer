@@ -38,12 +38,17 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, height: f32) {
         );
 
         let is_black = is_black_key(midi_note);
-        let fill = if is_black {
+        let is_previewing = state.preview_midi_note == Some(midi_note as u8);
+        let fill = if is_previewing {
+            Color32::from_rgb(255, 132, 180)
+        } else if is_black {
             Color32::from_rgb(40, 38, 36)
         } else {
             Color32::from_rgb(247, 244, 237)
         };
-        let stroke = if is_black {
+        let stroke = if is_previewing {
+            Color32::from_rgb(188, 48, 106)
+        } else if is_black {
             Color32::from_rgb(92, 88, 80)
         } else {
             Color32::from_rgb(196, 188, 175)

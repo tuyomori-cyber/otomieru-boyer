@@ -1,12 +1,12 @@
 # Current State
 
-Updated: 1787287489
+Updated: 1789121200
 
 Now:
-- Done: 静的解析で検出された未使用コード・Clippy警告を解消し、警告ゼロを確認
+- Done: 縮小時の実測11 FPS / 138 msと、時間方向の最大値集約による描画最適化方針をToDo・README・仕様書へ反映
 
 Next:
-- リリース前の長尺音源・EQ・複合DSP設定の実機確認
+- 表示幅の各描画列へ時間フレームを集約するスペクトログラム描画を実装
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.

@@ -14,6 +14,7 @@ pub struct SpectrogramActions {
 
 pub fn show(ui: &mut egui::Ui, state: &AppState, height: f32) -> SpectrogramActions {
     let mut actions = SpectrogramActions::default();
+    let pixels_per_point = ui.ctx().pixels_per_point();
     let desired_size = Vec2::new((ui.available_width() - 8.0).max(240.0), height.max(240.0));
     let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click_and_drag());
     let painter = ui.painter_at(rect);
@@ -29,10 +30,10 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, height: f32) -> SpectrogramActi
     let view_start = state.current_view_start_seconds();
     let view_end = state.current_view_end_seconds();
     let view_duration = (view_end - view_start).max(0.001);
-    let playhead_visible = state.playback.position_seconds >= view_start
-        && state.playback.position_seconds <= view_end;
+    let playhead_visible = state.display_playhead_position_seconds >= view_start
+        && state.display_playhead_position_seconds <= view_end;
     let normalized =
-        ((state.playback.position_seconds - view_start) / view_duration).clamp(0.0, 1.0);
+        ((state.display_playhead_position_seconds - view_start) / view_duration).clamp(0.0, 1.0);
     let current_x = egui::lerp(rect.left()..=rect.right(), normalized as f32);
 
     draw_spectrogram_body(&painter, rect, state, view_start, view_end);
@@ -48,12 +49,12 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, height: f32) -> SpectrogramActi
     );
 
     if playhead_visible {
-        painter.line_segment(
-            [
-                egui::pos2(current_x, rect.top()),
-                egui::pos2(current_x, rect.bottom()),
-            ],
-            Stroke::new(2.0, Color32::from_rgb(255, 209, 102)),
+        draw_subpixel_playhead(
+            &painter,
+            pixels_per_point,
+            rect.top(),
+            rect.bottom(),
+            current_x,
         );
     }
 
@@ -109,14 +110,14 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, height: f32) -> SpectrogramActi
 
     let playhead_bar_x = egui::lerp(
         page_bar_rect.left()..=page_bar_rect.right(),
-        (state.playback.position_seconds / duration).clamp(0.0, 1.0) as f32,
+        (state.display_playhead_position_seconds / duration).clamp(0.0, 1.0) as f32,
     );
-    painter.line_segment(
-        [
-            egui::pos2(playhead_bar_x, page_bar_rect.top()),
-            egui::pos2(playhead_bar_x, page_bar_rect.bottom()),
-        ],
-        Stroke::new(2.0, Color32::from_rgb(255, 209, 102)),
+    draw_subpixel_playhead(
+        &painter,
+        pixels_per_point,
+        page_bar_rect.top(),
+        page_bar_rect.bottom(),
+        playhead_bar_x,
     );
 
     let overlay = if state.playback.playing {
@@ -137,8 +138,14 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, height: f32) -> SpectrogramActi
         rect.left_top() + egui::vec2(16.0, 42.0),
         Align2::LEFT_TOP,
         format!(
-            "View | {:.2} - {:.2} sec | {:.1}x\n{}",
-            view_start, view_end, state.view_zoom, overlay
+            "View | {:.2} - {:.2} sec | {:.1}x\n{}\nUI: {:.1} FPS | {:.1} ms | Scale: {:.2}",
+            view_start,
+            view_end,
+            state.view_zoom,
+            overlay,
+            state.ui_frame_metrics.frames_per_second,
+            state.ui_frame_metrics.frame_time_ms,
+            state.ui_frame_metrics.pixels_per_point,
         ),
         FontId::proportional(16.0),
         Color32::from_rgb(175, 205, 220),
@@ -207,11 +214,11 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, height: f32) -> SpectrogramActi
                 let midi_note = pitch_view.min_midi_note
                     + (pitch_t * pitch_view.pitch_count() as f32).floor() as usize;
                 actions.preview_midi_note = Some(midi_note as u8);
-            } else if state.preview_tone_active {
+            } else if state.preview_midi_note.is_some() {
                 actions.stop_preview = true;
             }
         }
-    } else if state.preview_tone_active && !ui.input(|input| input.pointer.primary_down()) {
+    } else if state.preview_midi_note.is_some() && !ui.input(|input| input.pointer.primary_down()) {
         actions.stop_preview = true;
     }
 
@@ -273,16 +280,32 @@ fn draw_spectrogram_body(
         );
 
         for pitch in first_pitch..last_pitch_exclusive {
+            let midi_note = spectrogram.min_midi_note + pitch;
+            let is_emphasized_pitch = state.emphasized_pitch_classes[midi_note % 12];
+            let equalizer_gain = state
+                .playback
+                .dsp
+                .equalizer
+                .gain_for_frequency_hz(midi_to_frequency_hz(midi_note));
             let intensity = apply_display_gain(
                 spectrogram.intensity_at(frame_index, pitch),
                 state.spectrogram_gain_db,
+            ) * equalizer_gain;
+            let fundamental_strength = apply_display_gain(
+                spectrogram.fundamental_strength_at(frame_index, pitch),
+                state.spectrogram_gain_db,
+            ) * equalizer_gain;
+            let intensity = apply_fundamental_emphasis(
+                intensity,
+                fundamental_strength,
+                is_emphasized_pitch,
+                state.fundamental_emphasis,
             );
-            let intensity = intensity
-                * state
-                    .playback
-                    .dsp
-                    .equalizer
-                    .gain_for_frequency_hz(midi_to_frequency_hz(spectrogram.min_midi_note + pitch));
+            let intensity = apply_unemphasized_pitch_attenuation(
+                intensity,
+                is_emphasized_pitch,
+                state.unemphasized_pitch_attenuation,
+            );
             if intensity <= 0.01 {
                 continue;
             }
@@ -379,9 +402,75 @@ fn draw_loop_markers(
     }
 }
 
+fn draw_subpixel_playhead(
+    painter: &egui::Painter,
+    pixels_per_point: f32,
+    top: f32,
+    bottom: f32,
+    x: f32,
+) {
+    let pixel_width = 1.0 / pixels_per_point.max(1.0);
+    for (column_x, alpha) in subpixel_columns(x, pixels_per_point) {
+        if alpha <= f32::EPSILON {
+            continue;
+        }
+
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(column_x, top),
+                egui::pos2(column_x + pixel_width, bottom),
+            ),
+            0.0,
+            Color32::from_rgba_unmultiplied(255, 209, 102, (255.0 * alpha) as u8),
+        );
+    }
+}
+
+fn subpixel_columns(x: f32, pixels_per_point: f32) -> [(f32, f32); 2] {
+    let pixels_per_point = pixels_per_point.max(1.0);
+    let physical_x = x * pixels_per_point;
+    let physical_left = physical_x.floor();
+    let right_alpha = physical_x - physical_left;
+    [
+        (physical_left / pixels_per_point, 1.0 - right_alpha),
+        ((physical_left + 1.0) / pixels_per_point, right_alpha),
+    ]
+}
+
 fn apply_display_gain(intensity: f32, gain_db: f32) -> f32 {
     let gain = 10.0_f32.powf(gain_db / 20.0);
     (intensity * gain).clamp(0.0, 1.0)
+}
+
+fn apply_fundamental_emphasis(
+    intensity: f32,
+    fundamental_strength: f32,
+    is_emphasized_pitch: bool,
+    emphasis: f32,
+) -> f32 {
+    let emphasis = (emphasis / 100.0).clamp(0.0, 1.0);
+    if emphasis <= f32::EPSILON {
+        return intensity;
+    }
+
+    let focused_strength = if is_emphasized_pitch {
+        fundamental_strength
+    } else {
+        fundamental_strength * 0.35
+    };
+    intensity + (focused_strength - intensity) * emphasis
+}
+
+fn apply_unemphasized_pitch_attenuation(
+    intensity: f32,
+    is_emphasized_pitch: bool,
+    attenuation: f32,
+) -> f32 {
+    if is_emphasized_pitch {
+        return intensity;
+    }
+
+    intensity * (1.0 - (attenuation / 100.0).clamp(0.0, 1.0))
 }
 
 fn midi_to_frequency_hz(midi_note: usize) -> f32 {
@@ -411,4 +500,48 @@ fn lerp_rgb(from: (u8, u8, u8), to: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
         egui::lerp(from.1 as f32..=to.1 as f32, t) as u8,
         egui::lerp(from.2 as f32..=to.2 as f32, t) as u8,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        apply_fundamental_emphasis, apply_unemphasized_pitch_attenuation, subpixel_columns,
+    };
+
+    #[test]
+    fn fundamental_emphasis_is_raw_at_zero_percent() {
+        assert_eq!(apply_fundamental_emphasis(0.3, 0.8, true, 0.0), 0.3);
+    }
+
+    #[test]
+    fn fundamental_emphasis_uses_the_selected_pitch_strength() {
+        assert_eq!(apply_fundamental_emphasis(0.3, 0.8, true, 100.0), 0.8);
+        assert!((apply_fundamental_emphasis(0.3, 0.8, false, 100.0) - 0.28).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn attenuation_only_dims_unselected_notes() {
+        assert_eq!(apply_unemphasized_pitch_attenuation(0.8, true, 75.0), 0.8);
+        assert_eq!(apply_unemphasized_pitch_attenuation(0.8, false, 0.0), 0.8);
+        assert_eq!(apply_unemphasized_pitch_attenuation(0.8, false, 100.0), 0.0);
+        assert!(
+            (apply_unemphasized_pitch_attenuation(0.8, false, 75.0) - 0.2).abs() < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn subpixel_playhead_distributes_brightness_between_adjacent_columns() {
+        let columns = subpixel_columns(100.25, 1.0);
+
+        assert_eq!(columns[0], (100.0, 0.75));
+        assert_eq!(columns[1], (101.0, 0.25));
+    }
+
+    #[test]
+    fn subpixel_playhead_uses_physical_pixel_columns_on_high_dpi_displays() {
+        let columns = subpixel_columns(100.25, 2.0);
+
+        assert_eq!(columns[0], (100.0, 0.5));
+        assert_eq!(columns[1], (100.5, 0.5));
+    }
 }

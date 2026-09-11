@@ -336,7 +336,8 @@ impl PlaybackRuntime {
     }
 }
 
-pub const UI_REPAINT_INTERVAL: Duration = Duration::from_millis(33);
+/// 再生位置の表示を滑らかに保つため、再生中はおよそ60 FPSでUIを更新する。
+pub const UI_REPAINT_INTERVAL: Duration = Duration::from_micros(16_667);
 
 fn build_output_stream<T>(
     device: &cpal::Device,

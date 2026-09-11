@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use crate::app::state::AppState;
+use crate::app::state::{AppState, PITCH_CLASS_NAMES, ScalePreset};
 use crate::model::{EQ_BAND_COUNT, EQ_BAND_FREQUENCIES_HZ};
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -104,6 +104,10 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
                     .step_by(1.0),
             );
 
+            if ui.button("基音強調").clicked() {
+                state.pitch_focus_popup_open = true;
+            }
+
             ui.separator();
 
             let duration = state
@@ -114,7 +118,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
 
             ui.monospace(format!(
                 "{} / {}",
-                format_mm_ss(state.playback.position_seconds),
+                format_mm_ss(state.display_playhead_position_seconds),
                 format_mm_ss(duration)
             ));
         });
@@ -146,6 +150,64 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
             });
         });
     state.equalizer_popup_open = equalizer_popup_open;
+
+    let mut pitch_focus_popup_open = state.pitch_focus_popup_open;
+    egui::Window::new("基音強調")
+        .open(&mut pitch_focus_popup_open)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.label("倍音列から基音候補を強調します。再生音には影響しません。");
+            ui.add(
+                egui::Slider::new(&mut state.fundamental_emphasis, 0.0..=100.0)
+                    .text("強調")
+                    .suffix(" %")
+                    .step_by(5.0),
+            );
+
+            let mut scale_changed = false;
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_label("Root")
+                    .selected_text(PITCH_CLASS_NAMES[state.scale_root])
+                    .show_ui(ui, |ui| {
+                        for (index, name) in PITCH_CLASS_NAMES.iter().enumerate() {
+                            scale_changed |= ui
+                                .selectable_value(&mut state.scale_root, index, *name)
+                                .changed();
+                        }
+                    });
+                egui::ComboBox::from_label("Scale")
+                    .selected_text(state.scale_preset.label())
+                    .show_ui(ui, |ui| {
+                        for preset in ScalePreset::ALL {
+                            scale_changed |= ui
+                                .selectable_value(&mut state.scale_preset, preset, preset.label())
+                                .changed();
+                        }
+                    });
+            });
+            if scale_changed {
+                state.apply_scale_preset();
+            }
+
+            ui.label("強調する音（クリックで個別に変更）");
+            egui::Grid::new("emphasized_pitch_classes")
+                .num_columns(4)
+                .show(ui, |ui| {
+                    for (index, name) in PITCH_CLASS_NAMES.iter().enumerate() {
+                        ui.checkbox(&mut state.emphasized_pitch_classes[index], *name);
+                        if index % 4 == 3 {
+                            ui.end_row();
+                        }
+                    }
+                });
+            ui.add(
+                egui::Slider::new(&mut state.unemphasized_pitch_attenuation, 0.0..=100.0)
+                    .text("指定外の減衰")
+                    .suffix(" %")
+                    .step_by(5.0),
+            );
+        });
+    state.pitch_focus_popup_open = pitch_focus_popup_open;
 
     actions
 }
