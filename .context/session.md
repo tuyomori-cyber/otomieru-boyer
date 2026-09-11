@@ -8,6 +8,7 @@ Now:
 - Done: CC0のFreePats Piano FB smallを同梱し、スペクトログラム押下時のピアノ試聴を実装
 - Done: CC0のFreePats Synth Strings #1を同梱し、音色として選択可能にした
 - Done: EQ・基音強調・音色を1画面へ統合し、EQと基音強調は常時並べて表示
+- Done: 外部依存関係にCC0の同梱試聴音源と再配布条件を記載
 
 Next:
 - 最大縮小時と高倍率時で、UI FPS・再生線の追従を実機確認

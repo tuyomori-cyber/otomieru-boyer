@@ -66,7 +66,7 @@ cargo run
 cargo test
 ```
 
-詳細は [仕様書](仕様書.md)、[アーキテクチャ](docs/architecture.md)、[外部依存関係](docs/dependencies.md) を参照してください。
+詳細は [仕様書](仕様書.md)、[アーキテクチャ](docs/architecture.md)、[外部依存関係と同梱音源](docs/dependencies.md) を参照してください。
 
 ## ライセンス
 
