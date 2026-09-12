@@ -12,6 +12,9 @@ use crate::audio::piano_samples::{PianoSample, PianoSampleBank, SynthStringsSamp
 
 // 矩形波は一定振幅で高調波も多いため、録音サンプルと同じ振幅では大きく聞こえる。
 const SQUARE_WAVE_OUTPUT_GAIN: f32 = 0.25;
+const DEFAULT_REFERENCE_A4_HZ: f32 = 440.0;
+const MIN_REFERENCE_A4_HZ: f32 = 430.0;
+const MAX_REFERENCE_A4_HZ: f32 = 450.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
@@ -48,6 +51,8 @@ pub struct PreviewToneRequest {
     pub timbre: PreviewTimbre,
     /// 0.0 から 0.5 までの出力振幅。大きすぎる試聴音を避けるため上限を設ける。
     pub amplitude: f32,
+    /// 試聴音のA4基準周波数。元音源に合わせるための値で、430〜450 Hzに制限する。
+    pub reference_a4_hz: f32,
 }
 
 pub struct PreviewTonePlayer {
@@ -60,6 +65,7 @@ struct PreviewToneState {
     midi_note: AtomicU8,
     timbre: AtomicU8,
     amplitude_bits: AtomicU32,
+    reference_a4_hz_bits: AtomicU32,
 }
 
 #[derive(Debug)]
@@ -106,6 +112,7 @@ impl PreviewTonePlayer {
             midi_note: AtomicU8::new(69),
             timbre: AtomicU8::new(PreviewTimbre::Piano as u8),
             amplitude_bits: AtomicU32::new(0.16f32.to_bits()),
+            reference_a4_hz_bits: AtomicU32::new(DEFAULT_REFERENCE_A4_HZ.to_bits()),
         });
         let stream_state = Arc::clone(&state);
         let stream_samples = Arc::clone(&piano_samples);
@@ -162,6 +169,13 @@ impl PreviewTonePlayer {
             request.amplitude.clamp(0.0, 0.5).to_bits(),
             Ordering::Relaxed,
         );
+        self.state.reference_a4_hz_bits.store(
+            request
+                .reference_a4_hz
+                .clamp(MIN_REFERENCE_A4_HZ, MAX_REFERENCE_A4_HZ)
+                .to_bits(),
+            Ordering::Relaxed,
+        );
         self.state.active.store(true, Ordering::Relaxed);
     }
 
@@ -216,6 +230,8 @@ where
                     was_active = true;
                 }
                 let amplitude = f32::from_bits(state.amplitude_bits.load(Ordering::Relaxed));
+                let reference_a4_hz =
+                    f32::from_bits(state.reference_a4_hz_bits.load(Ordering::Relaxed));
                 match timbre {
                     PreviewTimbre::Piano => {
                         let sample = piano_samples.sample_at(current_sample_index);
@@ -230,6 +246,7 @@ where
                             sample_position,
                             midi_note,
                             output_sample_rate,
+                            reference_a4_hz,
                         );
                     }
                     PreviewTimbre::SynthStrings => {
@@ -245,13 +262,15 @@ where
                             sample_position,
                             midi_note,
                             output_sample_rate,
+                            reference_a4_hz,
                         );
                     }
                     PreviewTimbre::Square => {
                         let value =
                             square_wave_sample(square_phase, amplitude * SQUARE_WAVE_OUTPUT_GAIN);
                         square_phase = (square_phase
-                            + TAU * midi_to_frequency(midi_note as f32)
+                            + TAU * midi_to_frequency(midi_note as f32) * reference_a4_hz
+                                / DEFAULT_REFERENCE_A4_HZ
                                 / output_sample_rate as f32)
                             % TAU;
                         for out in frame {
@@ -286,8 +305,10 @@ fn advance_sample_position(
     position: f64,
     midi_note: u8,
     output_sample_rate: f64,
+    reference_a4_hz: f32,
 ) -> f64 {
-    let pitch_ratio = 2.0_f64.powf((midi_note as f64 - sample.root_midi as f64) / 12.0);
+    let pitch_ratio = 2.0_f64.powf((midi_note as f64 - sample.root_midi as f64) / 12.0)
+        * (reference_a4_hz / DEFAULT_REFERENCE_A4_HZ) as f64;
     let next_position =
         position + sample.audio.sample_rate as f64 / output_sample_rate * pitch_ratio;
     let Some((loop_start, loop_end)) = sample.loop_range_frames else {
@@ -311,8 +332,8 @@ fn square_wave_sample(phase: f32, amplitude: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        PreviewTimbre, SQUARE_WAVE_OUTPUT_GAIN, advance_sample_position, interpolated_sample,
-        square_wave_sample,
+        DEFAULT_REFERENCE_A4_HZ, PreviewTimbre, SQUARE_WAVE_OUTPUT_GAIN, advance_sample_position,
+        interpolated_sample, square_wave_sample,
     };
     use crate::audio::decoder::DecodedAudio;
     use crate::audio::piano_samples::PianoSample;
@@ -352,6 +373,30 @@ mod tests {
             },
             loop_range_frames: Some((100, 200)),
         };
-        assert_eq!(advance_sample_position(&sample, 199.5, 60, 1_000.0), 100.5);
+        assert_eq!(
+            advance_sample_position(&sample, 199.5, 60, 1_000.0, DEFAULT_REFERENCE_A4_HZ),
+            100.5
+        );
+    }
+
+    #[test]
+    fn sample_playback_follows_the_reference_a4_pitch() {
+        let sample = PianoSample {
+            root_midi: 69.0,
+            audio: DecodedAudio {
+                samples: vec![0.0; 2_000],
+                sample_rate: 1_000,
+                channels: 1,
+            },
+            loop_range_frames: None,
+        };
+        assert!(
+            (advance_sample_position(&sample, 0.0, 69, 1_000.0, 430.0) - 430.0 / 440.0).abs()
+                < 1e-6
+        );
+        assert!(
+            (advance_sample_position(&sample, 0.0, 69, 1_000.0, 450.0) - 450.0 / 440.0).abs()
+                < 1e-6
+        );
     }
 }

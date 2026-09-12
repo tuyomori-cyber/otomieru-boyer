@@ -148,6 +148,15 @@ fn show_settings_dialog(ctx: &egui::Context, state: &mut AppState) {
                 ui.heading("音色");
                 show_timbre_settings(ui, state);
             });
+            ui.separator();
+            ui.heading("試聴チューニング");
+            ui.label("元音源に合わせて、スペクトログラム押下時の試聴音だけを調整します。");
+            ui.add(
+                egui::Slider::new(&mut state.preview_reference_a4_hz, 430.0..=450.0)
+                    .text("A4 基準ピッチ")
+                    .suffix(" Hz")
+                    .step_by(0.1),
+            );
         });
     state.settings_popup_open = settings_popup_open;
 }

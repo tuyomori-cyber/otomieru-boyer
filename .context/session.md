@@ -1,17 +1,13 @@
 # Current State
 
-Updated: 1789121200
+Updated: 1789217901
 
 Now:
-- Done: 時間方向の最大値集約とスペクトログラム画像キャッシュを実装
-- Done: スペクトログラム押下中の矩形波の試聴音量調整を実装
-- Done: CC0のFreePats Piano FB smallを同梱し、スペクトログラム押下時のピアノ試聴を実装
-- Done: CC0のFreePats Synth Strings #1を同梱し、音色として選択可能にした
-- Done: EQ・基音強調・音色を1画面へ統合し、EQと基音強調は常時並べて表示
-- Done: 外部依存関係にCC0の同梱試聴音源と再配布条件を記載
+- Done: root-todoをv0.3.0音高メモの実装計画へ整理
+- Pending: v0.3.0の実装は未着手
 
 Next:
-- 最大縮小時と高倍率時で、UI FPS・再生線の追従を実機確認
+- データモデルとsidecar JSON保存の詳細設計を確定
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.
@@ -24,3 +20,4 @@ Relevant:
 - file: .context/session.md
 - file: .context/turns.jsonl
 - file: .context/root-todo.md
+

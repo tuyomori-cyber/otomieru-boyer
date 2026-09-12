@@ -106,6 +106,8 @@ pub struct AppState {
     pub preview_midi_note: Option<u8>,
     /// スペクトログラム押下中の試聴音の出力振幅。
     pub preview_tone_amplitude: f32,
+    /// 試聴音のA4基準周波数。スペクトログラムの解析・表示は変更しない。
+    pub preview_reference_a4_hz: f32,
     pub preview_timbre: PreviewTimbre,
     pub settings_popup_open: bool,
 }
@@ -316,6 +318,7 @@ impl Default for AppState {
             unemphasized_pitch_attenuation: 0.0,
             preview_midi_note: None,
             preview_tone_amplitude: 0.16,
+            preview_reference_a4_hz: 440.0,
             preview_timbre: PreviewTimbre::Piano,
             settings_popup_open: false,
         }

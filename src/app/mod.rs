@@ -220,6 +220,7 @@ impl eframe::App for OtomieruApp {
                                 midi_note,
                                 timbre: self.state.preview_timbre,
                                 amplitude: self.state.preview_tone_amplitude,
+                                reference_a4_hz: self.state.preview_reference_a4_hz,
                             });
                         }
                         if preview_changed {
