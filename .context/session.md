@@ -1,13 +1,12 @@
 # Current State
 
-Updated: 1789217901
+Updated: 1789284921
 
 Now:
-- Done: root-todoをv0.3.0音高メモの実装計画へ整理
-- Pending: v0.3.0の実装は未着手
+- Done: v0.1.0・v0.2.0のGit履歴を復元し、開発中のv0.3.0を含むCHANGELOGを追加
 
 Next:
-- データモデルとsidecar JSON保存の詳細設計を確定
+- 実機で保存JSONから4項目が消えることと、再起動時のレイヤー初期値を確認
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.
@@ -19,5 +18,5 @@ Relevant:
 - cwd: /home/tuyomori/project/otomieru-boyer
 - file: .context/session.md
 - file: .context/turns.jsonl
-- file: .context/root-todo.md
+- file: <docs/OtoMieru Boyer v0.3.0 ― 音高メモ仕様.md>
 

@@ -6,10 +6,17 @@ use std::time::Instant;
 
 use crate::app::state::{AppState, UiFrameMetrics};
 use crate::audio::decoder::decode_file;
-use crate::audio::player::{AudioPlayer, TransportState, UI_REPAINT_INTERVAL};
-use crate::audio::preview_tone::{PreviewTonePlayer, PreviewToneRequest};
-use crate::model::PlaybackDspSettings;
+use crate::audio::player::{AudioPlayer, PlayerSnapshot, TransportState, UI_REPAINT_INTERVAL};
+use crate::audio::preview_tone::{MemoToneRequest, PreviewTonePlayer, PreviewToneRequest};
+use crate::model::{PlaybackDspSettings, ProjectData, ProjectState};
+use crate::persistence::{
+    AudioIdentity, AudioMismatch, LoadOutcome, load_sidecar, save_sidecar, sidecar_path,
+};
 use crate::ui::{piano, spectrogram, timeline, toolbar};
+
+/// レイヤーの音量（0〜100%）に掛ける、音高メモ再生専用の基準振幅。
+/// スペクトログラム押下時の確認音量とは独立させる。
+const MEMO_TONE_BASE_AMPLITUDE: f32 = 0.16;
 
 pub struct OtomieruApp {
     state: AppState,
@@ -54,6 +61,7 @@ impl OtomieruApp {
                 match self.player.load_track(&track) {
                     Ok(()) => {
                         self.state.set_loaded_track(path, track);
+                        self.load_project_sidecar();
                         self.playhead_interpolator.reset(0.0);
                         self.last_applied_dsp_settings = None;
                     }
@@ -88,7 +96,74 @@ impl OtomieruApp {
             .set_loop_range(self.state.selection.normalized());
     }
 
+    fn load_project_sidecar(&mut self) {
+        let (Some(audio_path), Some(track)) = (
+            self.state.loaded_file_path.as_deref(),
+            self.state.track.as_ref(),
+        ) else {
+            return;
+        };
+        let identity = match AudioIdentity::from_audio(audio_path, track) {
+            Ok(identity) => identity,
+            Err(error) => {
+                self.state
+                    .set_status(format!("プロジェクト照合情報の取得に失敗しました: {error}"));
+                return;
+            }
+        };
+        match load_sidecar(audio_path, &identity) {
+            Ok(LoadOutcome::NotFound) => {}
+            Ok(LoadOutcome::Loaded {
+                project,
+                audio_mismatches,
+            }) => {
+                self.state.project = ProjectState::from_data(project);
+                self.state.sync_project_playback_settings();
+                if audio_mismatches.is_empty() {
+                    self.state.set_status("プロジェクトを読み込みました。");
+                } else {
+                    self.state.set_status(format!(
+                        "警告: sidecarの音源情報と{}が一致しません。プロジェクトは読み込みました。",
+                        mismatch_labels(&audio_mismatches)
+                    ));
+                }
+            }
+            Err(error) => {
+                self.state.set_status(format!(
+                    "プロジェクトを読み込めませんでした。新規プロジェクトを使用します: {error}"
+                ));
+            }
+        }
+    }
+
+    fn save_project_sidecar(&mut self) {
+        let (Some(audio_path), Some(track)) = (
+            self.state.loaded_file_path.as_deref(),
+            self.state.track.as_ref(),
+        ) else {
+            return;
+        };
+        let result = AudioIdentity::from_audio(audio_path, track)
+            .and_then(|identity| save_sidecar(audio_path, identity, &self.state.project.data));
+        match result {
+            Ok(path) => {
+                self.state.project.mark_saved();
+                self.state
+                    .set_status(format!("プロジェクトを保存しました: {}", path.display()));
+            }
+            Err(error) => {
+                let destination = sidecar_path(audio_path)
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|_| audio_path.display().to_string());
+                self.state.set_status(format!(
+                    "プロジェクト保存に失敗しました ({destination}): {error}"
+                ));
+            }
+        }
+    }
+
     fn sync_dsp_settings(&mut self) {
+        self.state.sync_project_playback_settings();
         if self.state.track.is_none() {
             self.last_applied_dsp_settings = None;
             return;
@@ -101,6 +176,47 @@ impl OtomieruApp {
             self.last_applied_dsp_settings = Some(self.state.playback.dsp);
         }
     }
+
+    fn sync_pitch_memo_playback(&mut self, snapshot: &PlayerSnapshot) {
+        let Some(preview_tone_player) = &mut self.preview_tone_player else {
+            return;
+        };
+        let requests = if snapshot.transport == TransportState::Playing {
+            active_memo_tone_requests(&self.state.project.data, snapshot.position_seconds)
+        } else {
+            Vec::new()
+        };
+        let settings = &self.state.project.data.project_settings;
+        preview_tone_player.sync_memo_voices(
+            &requests,
+            self.state.preview_timbre,
+            settings.preview_reference_a4_hz,
+            snapshot.transport_generation,
+        );
+    }
+}
+
+fn active_memo_tone_requests(project: &ProjectData, position_seconds: f64) -> Vec<MemoToneRequest> {
+    project
+        .layers
+        .iter()
+        .filter(|layer| !layer.muted && layer.volume > 0.0)
+        .flat_map(|layer| {
+            layer.memos.iter().filter_map(move |memo| {
+                let midi_note = u8::try_from(memo.pitch_midi)
+                    .ok()
+                    .filter(|midi_note| *midi_note <= 127)?;
+                let end_sec = memo.start_sec + memo.duration_sec;
+                (position_seconds >= memo.start_sec && position_seconds < end_sec).then_some(
+                    MemoToneRequest {
+                        memo_key: memo.id.get(),
+                        midi_note,
+                        amplitude: MEMO_TONE_BASE_AMPLITUDE * layer.volume,
+                    },
+                )
+            })
+        })
+        .collect()
 }
 
 fn configure_japanese_fonts(ctx: &egui::Context) {
@@ -135,11 +251,24 @@ impl eframe::App for OtomieruApp {
         self.state.ui_frame_metrics = self.ui_frame_monitor.observe(ctx.pixels_per_point());
         let space_pressed =
             ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Space));
+        let save_pressed =
+            ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S));
+        let undo_pressed =
+            ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Z));
         let actions = toolbar::show(ctx, &mut self.state);
         if actions.open_requested {
             self.open_audio_file();
         }
+        if actions.save_requested || (save_pressed && self.state.track.is_some()) {
+            self.save_project_sidecar();
+        }
+        if undo_pressed && self.state.project.undo() {
+            self.state
+                .set_status("直前の音高メモ編集を取り消しました。");
+        }
         self.sync_transport_state();
+        self.player
+            .set_source_volume(self.state.source_audio_volume);
         self.sync_dsp_settings();
         if actions.seek_to_start_requested {
             self.player.seek_to_start();
@@ -171,6 +300,7 @@ impl eframe::App for OtomieruApp {
         let snapshot = self.player.snapshot();
         self.state.playback.playing = snapshot.transport == TransportState::Playing;
         self.state.playback.position_seconds = snapshot.position_seconds;
+        self.sync_pitch_memo_playback(&snapshot);
         self.state.display_playhead_position_seconds = self.playhead_interpolator.update(
             snapshot.position_seconds,
             self.state.playback.playing,
@@ -193,7 +323,7 @@ impl eframe::App for OtomieruApp {
                     piano::show(ui, &self.state, visualization_height);
                     let spectrogram_actions = spectrogram::show(
                         ui,
-                        &self.state,
+                        &mut self.state,
                         visualization_height,
                         &mut self.spectrogram_cache,
                     );
@@ -220,7 +350,12 @@ impl eframe::App for OtomieruApp {
                                 midi_note,
                                 timbre: self.state.preview_timbre,
                                 amplitude: self.state.preview_tone_amplitude,
-                                reference_a4_hz: self.state.preview_reference_a4_hz,
+                                reference_a4_hz: self
+                                    .state
+                                    .project
+                                    .data
+                                    .project_settings
+                                    .preview_reference_a4_hz,
                             });
                         }
                         if preview_changed {
@@ -246,6 +381,14 @@ impl eframe::App for OtomieruApp {
             ctx.request_repaint_after(UI_REPAINT_INTERVAL);
         }
     }
+}
+
+fn mismatch_labels(mismatches: &[AudioMismatch]) -> String {
+    mismatches
+        .iter()
+        .map(|mismatch| mismatch.label())
+        .collect::<Vec<_>>()
+        .join("・")
 }
 
 #[derive(Default)]
@@ -342,8 +485,60 @@ impl PlayheadInterpolator {
 
 #[cfg(test)]
 mod tests {
-    use super::{PlayheadInterpolator, UiFrameMonitor};
+    use super::{PlayheadInterpolator, UiFrameMonitor, active_memo_tone_requests};
+    use crate::model::ProjectState;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn memo_tone_is_active_at_its_start_but_not_at_its_end() {
+        let mut project = ProjectState::new();
+        let layer_id = project.editing.selected_layer_id.unwrap();
+        project.add_memo(layer_id, 1.0, 0.5, 60).unwrap();
+
+        assert_eq!(active_memo_tone_requests(&project.data, 1.0).len(), 1);
+        assert!(active_memo_tone_requests(&project.data, 1.5).is_empty());
+    }
+
+    #[test]
+    fn memo_tone_honors_mute_and_volume_but_not_visibility() {
+        let mut project = ProjectState::new();
+        let layer_id = project.editing.selected_layer_id.unwrap();
+        project.add_memo(layer_id, 0.0, 1.0, 64).unwrap();
+        let layer = &mut project.data.layers[0];
+        layer.visible = false;
+        layer.volume = 0.25;
+
+        let requests = active_memo_tone_requests(&project.data, 0.5);
+        assert_eq!(requests.len(), 1);
+        assert!((requests[0].amplitude - 0.04).abs() < f32::EPSILON);
+
+        project.data.layers[0].muted = true;
+        assert!(active_memo_tone_requests(&project.data, 0.5).is_empty());
+    }
+
+    #[test]
+    fn overlapping_memos_are_returned_as_independent_voices() {
+        let mut project = ProjectState::new();
+        let layer_id = project.editing.selected_layer_id.unwrap();
+        project.add_memo(layer_id, 0.0, 2.0, 60).unwrap();
+        project.add_memo(layer_id, 0.5, 1.0, 67).unwrap();
+
+        let requests = active_memo_tone_requests(&project.data, 1.0);
+
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].midi_note, 60);
+        assert_eq!(requests[1].midi_note, 67);
+        assert_ne!(requests[0].memo_key, requests[1].memo_key);
+    }
+
+    #[test]
+    fn invalid_midi_notes_are_not_sent_to_the_audio_thread() {
+        let mut project = ProjectState::new();
+        let layer_id = project.editing.selected_layer_id.unwrap();
+        project.add_memo(layer_id, 0.0, 1.0, 128).unwrap();
+
+        assert!(active_memo_tone_requests(&project.data, 0.5).is_empty());
+    }
 
     #[test]
     fn interpolator_advances_between_audio_snapshots() {

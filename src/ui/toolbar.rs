@@ -1,12 +1,14 @@
 use eframe::egui;
 
-use crate::app::state::{AppState, PITCH_CLASS_NAMES, ScalePreset};
+use crate::app::state::{AppState, PITCH_CLASS_NAMES};
 use crate::audio::preview_tone::PreviewTimbre;
-use crate::model::{EQ_BAND_COUNT, EQ_BAND_FREQUENCIES_HZ};
+use crate::model::{EQ_BAND_COUNT, EQ_BAND_FREQUENCIES_HZ, ScalePreset};
+use crate::ui::spectrogram::layer_color;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ToolbarActions {
     pub open_requested: bool,
+    pub save_requested: bool,
     pub play_pause_requested: bool,
     pub seek_to_start_requested: bool,
     pub stop_requested: bool,
@@ -23,6 +25,15 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
 
             if ui.button("Open").clicked() {
                 actions.open_requested = true;
+            }
+            if ui
+                .add_enabled(
+                    state.track.is_some() && state.project.editing.dirty,
+                    egui::Button::new("Save"),
+                )
+                .clicked()
+            {
+                actions.save_requested = true;
             }
 
             let play_label = if state.playback.playing {
@@ -106,6 +117,12 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
                     .suffix("")
                     .custom_formatter(|amplitude, _| format!("{:.0}%", amplitude * 100.0)),
             );
+            ui.add(
+                egui::Slider::new(&mut state.source_audio_volume, 0.0..=1.0)
+                    .text("原曲音量")
+                    .suffix("")
+                    .custom_formatter(|volume, _| format!("{:.0}%", volume * 100.0)),
+            );
 
             ui.separator();
 
@@ -134,108 +151,290 @@ fn show_settings_dialog(ctx: &egui::Context, state: &mut AppState) {
     let mut settings_popup_open = state.settings_popup_open;
     egui::Window::new("調整・設定")
         .open(&mut settings_popup_open)
-        .resizable(false)
-        .default_width(720.0)
+        .resizable(true)
+        .scroll([true, true])
+        .default_width(360.0)
+        .default_height(540.0)
+        .min_size([280.0, 220.0])
         .show(ctx, |ui| {
-            ui.columns(2, |columns| {
-                columns[0].heading("EQ");
-                show_equalizer_settings(&mut columns[0], state);
-                columns[1].heading("基音強調");
-                show_fundamental_settings(&mut columns[1], state);
-            });
+            show_settings_section(
+                ui,
+                "settings_equalizer",
+                "EQ",
+                "再生停止中に調整できます。表示にも反映されます。",
+                |ui| show_equalizer_settings(ui, state),
+            );
             ui.separator();
-            ui.horizontal(|ui| {
-                ui.heading("音色");
+
+            show_settings_section(
+                ui,
+                "settings_fundamental",
+                "基音強調",
+                "倍音列から基音候補を強調します。再生音には影響しません。",
+                |ui| show_fundamental_settings(ui, state),
+            );
+            ui.separator();
+
+            show_settings_section(ui, "settings_timbre", "音色", "", |ui| {
                 show_timbre_settings(ui, state);
             });
             ui.separator();
-            ui.heading("試聴チューニング");
-            ui.label("元音源に合わせて、スペクトログラム押下時の試聴音だけを調整します。");
-            ui.add(
-                egui::Slider::new(&mut state.preview_reference_a4_hz, 430.0..=450.0)
-                    .text("A4 基準ピッチ")
-                    .suffix(" Hz")
-                    .step_by(0.1),
+
+            show_settings_section(
+                ui,
+                "settings_tuning",
+                "チューニング",
+                "元音源に合わせて、スペクトログラム押下時の試聴音だけを調整します。",
+                |ui| {
+                    if ui
+                        .add(
+                            egui::Slider::new(
+                                &mut state.project.data.project_settings.preview_reference_a4_hz,
+                                430.0..=450.0,
+                            )
+                            .text("A4 基準ピッチ")
+                            .suffix(" Hz")
+                            .step_by(0.1),
+                        )
+                        .changed()
+                    {
+                        state.project.editing.dirty = true;
+                    }
+                },
+            );
+            ui.separator();
+
+            show_settings_section(
+                ui,
+                "settings_layers",
+                "レイヤー",
+                "入力先を選択し、レイヤーごとの表示・試聴設定を調整します。",
+                |ui| show_layer_settings(ui, state),
             );
         });
     state.settings_popup_open = settings_popup_open;
 }
 
+fn show_settings_section(
+    ui: &mut egui::Ui,
+    id_salt: &'static str,
+    label: &'static str,
+    help: &'static str,
+    body: impl FnOnce(&mut egui::Ui),
+) {
+    egui::collapsing_header::CollapsingState::load_with_default_open(
+        ui.ctx(),
+        ui.make_persistent_id(id_salt),
+        true,
+    )
+    .show_header(ui, |ui| {
+        let label_response = ui.strong(label);
+        if !help.is_empty() {
+            label_response.on_hover_text_at_pointer(help);
+            let info_button = ui
+                .add_sized([28.0, 22.0], egui::Button::new("ⓘ").frame(false))
+                .on_hover_text_at_pointer(help);
+            egui::Popup::menu(&info_button)
+                .id(ui.make_persistent_id((id_salt, "help")))
+                .show(|ui| {
+                    ui.set_max_width(300.0);
+                    ui.label(help);
+                });
+        }
+    })
+    .body(body);
+}
+
 fn show_equalizer_settings(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.label("再生停止中に調整できます。表示にも反映されます。");
+    let mut changed = false;
     ui.add_enabled_ui(state.track.is_some() && !state.playback.playing, |ui| {
         for (index, frequency_hz) in EQ_BAND_FREQUENCIES_HZ.iter().copied().enumerate() {
-            ui.add(
-                egui::Slider::new(
-                    &mut state.playback.dsp.equalizer.gains_db[index],
-                    -12.0..=12.0,
+            changed |= ui
+                .add(
+                    egui::Slider::new(
+                        &mut state.project.data.project_settings.equalizer_gains_db[index],
+                        -12.0..=12.0,
+                    )
+                    .text(format_frequency(frequency_hz))
+                    .suffix(" dB")
+                    .step_by(0.5),
                 )
-                .text(format_frequency(frequency_hz))
-                .suffix(" dB")
-                .step_by(0.5),
-            );
+                .changed();
         }
         if ui.button("Reset EQ").clicked() {
-            state.playback.dsp.equalizer.gains_db = [0.0; EQ_BAND_COUNT];
+            changed |=
+                state.project.data.project_settings.equalizer_gains_db != [0.0; EQ_BAND_COUNT];
+            state.project.data.project_settings.equalizer_gains_db = [0.0; EQ_BAND_COUNT];
         }
     });
+    state.project.editing.dirty |= changed;
 }
 
 fn show_fundamental_settings(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.label("倍音列から基音候補を強調します。再生音には影響しません。");
-    ui.add(
-        egui::Slider::new(&mut state.fundamental_emphasis, 0.0..=100.0)
-            .text("強調")
-            .suffix(" %")
-            .step_by(5.0),
-    );
+    let analysis = &mut state.project.data.project_settings.fundamental_analysis;
+    let mut changed = ui
+        .add(
+            egui::Slider::new(&mut analysis.emphasis, 0.0..=100.0)
+                .text("強調")
+                .suffix(" %")
+                .step_by(5.0),
+        )
+        .changed();
     let mut scale_changed = false;
     ui.horizontal(|ui| {
         egui::ComboBox::from_label("Root")
-            .selected_text(PITCH_CLASS_NAMES[state.scale_root])
+            .selected_text(PITCH_CLASS_NAMES[analysis.scale_root])
             .show_ui(ui, |ui| {
                 for (index, name) in PITCH_CLASS_NAMES.iter().enumerate() {
                     scale_changed |= ui
-                        .selectable_value(&mut state.scale_root, index, *name)
+                        .selectable_value(&mut analysis.scale_root, index, *name)
                         .changed();
                 }
             });
         egui::ComboBox::from_label("Scale")
-            .selected_text(state.scale_preset.label())
+            .selected_text(analysis.scale_preset.label())
             .show_ui(ui, |ui| {
                 for preset in ScalePreset::ALL {
                     scale_changed |= ui
-                        .selectable_value(&mut state.scale_preset, preset, preset.label())
+                        .selectable_value(&mut analysis.scale_preset, preset, preset.label())
                         .changed();
                 }
             });
     });
     if scale_changed {
-        state.apply_scale_preset();
+        analysis.apply_scale_preset();
     }
+    changed |= scale_changed;
     ui.label("強調する音（クリックで個別に変更）");
     egui::Grid::new("emphasized_pitch_classes")
         .num_columns(4)
         .show(ui, |ui| {
             for (index, name) in PITCH_CLASS_NAMES.iter().enumerate() {
-                ui.checkbox(&mut state.emphasized_pitch_classes[index], *name);
+                changed |= ui
+                    .checkbox(&mut analysis.emphasized_pitch_classes[index], *name)
+                    .changed();
                 if index % 4 == 3 {
                     ui.end_row();
                 }
             }
         });
-    ui.add(
-        egui::Slider::new(&mut state.unemphasized_pitch_attenuation, 0.0..=100.0)
-            .text("指定外の減衰")
-            .suffix(" %")
-            .step_by(5.0),
-    );
+    changed |= ui
+        .add(
+            egui::Slider::new(&mut analysis.unemphasized_pitch_attenuation, 0.0..=100.0)
+                .text("指定外の減衰")
+                .suffix(" %")
+                .step_by(5.0),
+        )
+        .changed();
+    state.project.editing.dirty |= changed;
 }
 
 fn show_timbre_settings(ui: &mut egui::Ui, state: &mut AppState) {
     for timbre in PreviewTimbre::ALL {
         ui.radio_value(&mut state.preview_timbre, timbre, timbre.label());
     }
+}
+
+fn show_layer_settings(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.label("一括設定");
+    ui.horizontal_wrapped(|ui| {
+        let mut all_volume = state
+            .project
+            .data
+            .layers
+            .first()
+            .map(|layer| layer.volume)
+            .unwrap_or(0.0);
+        if ui
+            .add(
+                egui::Slider::new(&mut all_volume, 0.0..=1.0)
+                    .text("全レイヤー音量")
+                    .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+            )
+            .changed()
+        {
+            state.project.set_all_layers_volume(all_volume);
+        }
+
+        let mut all_visible = state.project.data.layers.iter().all(|layer| layer.visible);
+        if ui.checkbox(&mut all_visible, "全表示").changed() {
+            state.project.set_all_layers_visible(all_visible);
+        }
+
+        let mut all_muted = state.project.data.layers.iter().all(|layer| layer.muted);
+        if ui.checkbox(&mut all_muted, "全ミュート").changed() {
+            state.project.set_all_layers_muted(all_muted);
+        }
+
+        let mut all_opacity = state
+            .project
+            .data
+            .layers
+            .first()
+            .map(|layer| layer.opacity)
+            .unwrap_or(0.0);
+        if ui
+            .add(
+                egui::Slider::new(&mut all_opacity, 0.0..=1.0)
+                    .text("全レイヤー透明度")
+                    .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+            )
+            .changed()
+        {
+            state.project.set_all_layers_opacity(all_opacity);
+        }
+    });
+    ui.separator();
+
+    let selected_layer_id = state.project.editing.selected_layer_id;
+    let mut next_selected_layer_id = None;
+    let mut persistent_changed = false;
+
+    for layer in &mut state.project.data.layers {
+        let layer_id = layer.id;
+        ui.group(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .selectable_label(selected_layer_id == Some(layer_id), "入力")
+                    .on_hover_text("このレイヤーを音高メモの入力先にします")
+                    .clicked()
+                {
+                    next_selected_layer_id = Some(layer_id);
+                }
+                ui.label(egui::RichText::new("■").color(layer_color(layer_id.get())));
+                persistent_changed |= ui
+                    .add(
+                        egui::TextEdit::singleline(&mut layer.name)
+                            .desired_width(120.0)
+                            .hint_text("レイヤー名"),
+                    )
+                    .changed();
+                ui.checkbox(&mut layer.visible, "表示");
+                let mute_label = if layer.muted { "Unmute" } else { "Mute" };
+                if ui.button(mute_label).clicked() {
+                    layer.muted = !layer.muted;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Slider::new(&mut layer.volume, 0.0..=1.0)
+                        .text("音量")
+                        .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+                );
+                ui.add(
+                    egui::Slider::new(&mut layer.opacity, 0.0..=1.0)
+                        .text("透明度")
+                        .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+                );
+            });
+        });
+    }
+
+    if let Some(layer_id) = next_selected_layer_id {
+        state.project.editing.selected_layer_id = Some(layer_id);
+        state.project.editing.selected_memo = None;
+    }
+    state.project.editing.dirty |= persistent_changed;
 }
 
 fn format_frequency(frequency_hz: f32) -> String {

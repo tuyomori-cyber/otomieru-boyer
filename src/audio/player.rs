@@ -1,6 +1,6 @@
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -22,6 +22,7 @@ pub struct AudioPlayer {
 pub struct PlayerSnapshot {
     pub transport: TransportState,
     pub position_seconds: f64,
+    pub transport_generation: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -126,6 +127,7 @@ impl AudioPlayer {
         if let Some(runtime) = &self.runtime {
             if runtime.is_finished() {
                 runtime.set_position_frames(0.0);
+                runtime.transport_generation.fetch_add(1, Ordering::Relaxed);
             }
             runtime
                 .dsp_engine
@@ -152,6 +154,7 @@ impl AudioPlayer {
                 .transport
                 .store(TransportState::Stopped.as_u8(), Ordering::Relaxed);
             runtime.set_position_frames(0.0);
+            runtime.transport_generation.fetch_add(1, Ordering::Relaxed);
             runtime
                 .dsp_engine
                 .notify_transport_event(DspTransportEvent::Stop);
@@ -161,6 +164,7 @@ impl AudioPlayer {
     pub fn seek_to_start(&mut self) {
         if let Some(runtime) = &self.runtime {
             runtime.set_position_frames(0.0);
+            runtime.transport_generation.fetch_add(1, Ordering::Relaxed);
             runtime
                 .dsp_engine
                 .notify_transport_event(DspTransportEvent::Seek {
@@ -172,6 +176,7 @@ impl AudioPlayer {
     pub fn seek_to_seconds(&mut self, seconds: f64) {
         if let Some(runtime) = &self.runtime {
             runtime.seek_to_seconds(seconds);
+            runtime.transport_generation.fetch_add(1, Ordering::Relaxed);
             runtime
                 .dsp_engine
                 .notify_transport_event(DspTransportEvent::Seek {
@@ -185,12 +190,14 @@ impl AudioPlayer {
             return PlayerSnapshot {
                 transport: TransportState::Stopped,
                 position_seconds: 0.0,
+                transport_generation: 0,
             };
         };
 
         PlayerSnapshot {
             transport: TransportState::from_u8(runtime.transport.load(Ordering::Relaxed)),
             position_seconds: runtime.current_position_seconds(),
+            transport_generation: runtime.transport_generation.load(Ordering::Relaxed),
         }
     }
 
@@ -218,6 +225,7 @@ impl AudioPlayer {
                     let position = runtime.current_position_frames();
                     if position < start_frames || position >= end_frames {
                         runtime.set_position_frames(start_frames);
+                        runtime.transport_generation.fetch_add(1, Ordering::Relaxed);
                         runtime
                             .dsp_engine
                             .notify_transport_event(DspTransportEvent::LoopJump {
@@ -242,6 +250,14 @@ impl AudioPlayer {
             runtime.set_dsp_settings(settings);
         }
     }
+
+    pub fn set_source_volume(&self, volume: f32) {
+        if let Some(runtime) = &self.runtime {
+            runtime
+                .source_volume_bits
+                .store(volume.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+        }
+    }
 }
 
 impl Default for AudioPlayer {
@@ -257,6 +273,8 @@ struct PlaybackRuntime {
     loop_enabled: AtomicBool,
     loop_start_frames_bits: AtomicU64,
     loop_end_frames_bits: AtomicU64,
+    transport_generation: AtomicU64,
+    source_volume_bits: AtomicU32,
 }
 
 impl PlaybackRuntime {
@@ -274,6 +292,8 @@ impl PlaybackRuntime {
             loop_enabled: AtomicBool::new(false),
             loop_start_frames_bits: AtomicU64::new(0.0f64.to_bits()),
             loop_end_frames_bits: AtomicU64::new(0.0f64.to_bits()),
+            transport_generation: AtomicU64::new(1),
+            source_volume_bits: AtomicU32::new(1.0f32.to_bits()),
         }
     }
 
@@ -370,6 +390,8 @@ where
     let dsp_settings = runtime.current_dsp_settings();
     let speed_ratio = dsp_settings.speed_ratio.max(0.25) as f64;
     let use_streaming = dsp_settings.preserve_pitch_on_speed_change;
+    let source_volume =
+        f32::from_bits(runtime.source_volume_bits.load(Ordering::Relaxed)).clamp(0.0, 1.0);
     let mut streamed_frame = [0.0f32; 32];
 
     for frame in output.chunks_mut(output_channels) {
@@ -377,6 +399,7 @@ where
             && position_frames >= loop_end
         {
             position_frames = loop_start;
+            runtime.transport_generation.fetch_add(1, Ordering::Relaxed);
             runtime.dsp_engine.reset_stream_to(loop_start);
         }
 
@@ -416,7 +439,7 @@ where
                     .dsp_engine
                     .render_source_sample(position_frames, channel)
             };
-            *sample = T::from_sample(value);
+            *sample = T::from_sample(value * source_volume);
         }
 
         position_frames += runtime.step_ratio() * speed_ratio;

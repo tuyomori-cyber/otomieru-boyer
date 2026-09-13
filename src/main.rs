@@ -1,7 +1,8 @@
 mod analysis;
 mod app;
 mod audio;
-mod model;
+pub mod model;
+mod persistence;
 mod ui;
 
 use app::OtomieruApp;

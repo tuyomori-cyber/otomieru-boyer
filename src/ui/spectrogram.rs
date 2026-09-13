@@ -1,6 +1,13 @@
 use eframe::egui::{self, Align2, Color32, FontId, Sense, Stroke, TextureHandle, Vec2};
 
 use crate::app::state::AppState;
+use crate::model::{
+    DEFAULT_MEMO_DURATION_SECONDS, EqualizerSettings, PitchMemoLayer, SelectedMemo,
+};
+
+const MEMO_HANDLE_HIT_RADIUS: f32 = 7.0;
+const MIN_MEMO_DURATION_SECONDS: f64 = 0.01;
+const MEMO_EDIT_DRAG_ID: &str = "pitch-memo-edit-drag";
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SpectrogramActions {
@@ -41,9 +48,78 @@ struct SpectrogramCacheKey {
     equalizer_gain_bits: [u32; 5],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoEdge {
+    Start,
+    End,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MemoHit {
+    selected: SelectedMemo,
+    edge: Option<MemoEdge>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MemoHoverCursor {
+    Resize,
+    Move(egui::Pos2),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MemoResizeDrag {
+    selected: SelectedMemo,
+    edge: MemoEdge,
+    original_start_sec: f64,
+    original_duration_sec: f64,
+    pitch_midi: i32,
+    proposed_start_sec: f64,
+    proposed_duration_sec: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MemoMoveDrag {
+    selected: SelectedMemo,
+    duration_sec: f64,
+    start_offset_sec: f64,
+    pitch_offset_midi: i32,
+    proposed_start_sec: f64,
+    proposed_pitch_midi: i32,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MemoEditDrag {
+    Resize(MemoResizeDrag),
+    Move(MemoMoveDrag),
+}
+
+impl MemoEditDrag {
+    fn selected(self) -> SelectedMemo {
+        match self {
+            Self::Resize(drag) => drag.selected,
+            Self::Move(drag) => drag.selected,
+        }
+    }
+
+    fn proposed_bounds(self) -> (f64, f64, i32) {
+        match self {
+            Self::Resize(drag) => (
+                drag.proposed_start_sec,
+                drag.proposed_duration_sec,
+                drag.pitch_midi,
+            ),
+            Self::Move(drag) => (
+                drag.proposed_start_sec,
+                drag.duration_sec,
+                drag.proposed_pitch_midi,
+            ),
+        }
+    }
+}
+
 pub fn show(
     ui: &mut egui::Ui,
-    state: &AppState,
+    state: &mut AppState,
     height: f32,
     cache: &mut SpectrogramCache,
 ) -> SpectrogramActions {
@@ -71,6 +147,33 @@ pub fn show(
     let current_x = egui::lerp(rect.left()..=rect.right(), normalized as f32);
 
     draw_spectrogram_body(&painter, rect, state, view_start, view_end, cache);
+
+    let content_rect =
+        egui::Rect::from_min_max(rect.left_top(), rect.right_bottom() - egui::vec2(0.0, 40.0));
+    let memo_edit_drag =
+        handle_pitch_memo_interaction(ui, &response, state, content_rect, view_start, view_end);
+    let memo_hover_cursor = memo_hover_cursor(&response, state, content_rect, view_start, view_end);
+    if let Some(cursor) = memo_hover_cursor {
+        ui.output_mut(|output| {
+            output.cursor_icon = match cursor {
+                MemoHoverCursor::Resize => egui::CursorIcon::ResizeHorizontal,
+                // 一部のLinuxカーソルテーマではMoveが□に代替されるため、
+                // 中央の移動カーソルはアプリ側で描画する。
+                MemoHoverCursor::Move(_) => egui::CursorIcon::None,
+            };
+        });
+    }
+    draw_pitch_memos(
+        &painter,
+        content_rect,
+        state,
+        view_start,
+        view_end,
+        memo_edit_drag.as_ref(),
+    );
+    if let Some(MemoHoverCursor::Move(position)) = memo_hover_cursor {
+        draw_memo_move_cursor(&painter, position);
+    }
 
     let page_bar_height = 16.0;
     let page_bar_margin = 14.0;
@@ -159,6 +262,11 @@ pub fn show(
     } else {
         "停止中は表示範囲だけ移動"
     };
+    let memo_controls = if state.playback.playing {
+        "音高メモ編集は停止中のみ"
+    } else {
+        "音高メモ: 左ダブルクリックで追加 / 右クリックで削除 / 左右端を右ドラッグでリサイズ"
+    };
 
     painter.text(
         rect.left_top() + egui::vec2(16.0, 16.0),
@@ -172,11 +280,12 @@ pub fn show(
         rect.left_top() + egui::vec2(16.0, 42.0),
         Align2::LEFT_TOP,
         format!(
-            "View | {:.2} - {:.2} sec | {:.1}x\n{}\nUI: {:.1} FPS | {:.1} ms | Scale: {:.2}",
+            "View | {:.2} - {:.2} sec | {:.1}x\n{}\n{}\nUI: {:.1} FPS | {:.1} ms | Scale: {:.2}",
             view_start,
             view_end,
             state.view_zoom,
             overlay,
+            memo_controls,
             state.ui_frame_metrics.frames_per_second,
             state.ui_frame_metrics.frame_time_ms,
             state.ui_frame_metrics.pixels_per_point,
@@ -200,8 +309,6 @@ pub fn show(
         Color32::from_rgb(165, 188, 204),
     );
 
-    let content_rect =
-        egui::Rect::from_min_max(rect.left_top(), rect.right_bottom() - egui::vec2(0.0, 40.0));
     if let Some(pointer_pos) = response.hover_pos() {
         if page_bar_rect.contains(pointer_pos) && !state.playback.playing {
             let pointer_down = ui.input(|input| input.pointer.primary_down());
@@ -232,7 +339,10 @@ pub fn show(
                     actions.zoom_at = Some((view_start + view_duration * pointer_t, factor));
                 }
             }
-            if !state.playback.playing && response.clicked() {
+            if !state.playback.playing
+                && response.clicked()
+                && !response.double_clicked_by(egui::PointerButton::Primary)
+            {
                 let t = ((pointer_pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;
                 actions.seek_seconds = Some(view_start + view_duration * t);
             }
@@ -257,6 +367,515 @@ pub fn show(
     }
 
     actions
+}
+
+fn handle_pitch_memo_interaction(
+    ui: &mut egui::Ui,
+    response: &egui::Response,
+    state: &mut AppState,
+    content_rect: egui::Rect,
+    view_start: f64,
+    view_end: f64,
+) -> Option<MemoEditDrag> {
+    let audio_duration = state
+        .track
+        .as_ref()
+        .map(|track| track.duration_seconds)
+        .unwrap_or(0.0);
+    if audio_duration <= 0.0 || state.playback.playing {
+        return None;
+    }
+
+    if response.double_clicked_by(egui::PointerButton::Primary)
+        && let Some(pointer_pos) = response.interact_pointer_pos()
+        && content_rect.contains(pointer_pos)
+        && let Some(layer_id) = state.project.editing.selected_layer_id
+    {
+        let duration_sec = DEFAULT_MEMO_DURATION_SECONDS.min(audio_duration);
+        let clicked_sec = x_to_time(pointer_pos.x, view_start, view_end, content_rect);
+        let start_sec = clicked_sec.min((audio_duration - duration_sec).max(0.0));
+        let pitch_midi = y_to_pitch(pointer_pos.y, state, content_rect);
+        state
+            .project
+            .add_memo(layer_id, start_sec, duration_sec, pitch_midi);
+    }
+
+    let drag_id = ui.id().with(MEMO_EDIT_DRAG_ID);
+    if response.drag_started_by(egui::PointerButton::Secondary)
+        && let Some(pressed_pos) = ui.input(|input| input.pointer.press_origin())
+        && let Some(hit) = find_memo_hit(pressed_pos, state, content_rect, view_start, view_end)
+        && let Some(memo) = state.project.memo(hit.selected)
+    {
+        let pressed_sec = x_to_time(pressed_pos.x, view_start, view_end, content_rect);
+        let pressed_pitch_midi = y_to_pitch(pressed_pos.y, state, content_rect);
+        let drag = match hit.edge {
+            Some(edge) => MemoEditDrag::Resize(MemoResizeDrag {
+                selected: hit.selected,
+                edge,
+                original_start_sec: memo.start_sec,
+                original_duration_sec: memo.duration_sec,
+                pitch_midi: memo.pitch_midi,
+                proposed_start_sec: memo.start_sec,
+                proposed_duration_sec: memo.duration_sec,
+            }),
+            None => MemoEditDrag::Move(MemoMoveDrag {
+                selected: hit.selected,
+                duration_sec: memo.duration_sec,
+                start_offset_sec: pressed_sec - memo.start_sec,
+                pitch_offset_midi: pressed_pitch_midi - memo.pitch_midi,
+                proposed_start_sec: memo.start_sec,
+                proposed_pitch_midi: memo.pitch_midi,
+            }),
+        };
+        state.project.editing.selected_layer_id = Some(hit.selected.layer_id);
+        state.project.editing.selected_memo = Some(hit.selected);
+        ui.ctx().data_mut(|data| data.insert_temp(drag_id, drag));
+    }
+
+    if response.dragged_by(egui::PointerButton::Secondary)
+        && let Some(pointer_pos) = response.interact_pointer_pos()
+        && let Some(mut drag) = ui.ctx().data(|data| data.get_temp::<MemoEditDrag>(drag_id))
+    {
+        let pointer_sec = x_to_time(pointer_pos.x, view_start, view_end, content_rect);
+        let pointer_pitch_midi = y_to_pitch(pointer_pos.y, state, content_rect);
+        match &mut drag {
+            MemoEditDrag::Resize(drag) => {
+                (drag.proposed_start_sec, drag.proposed_duration_sec) = resized_memo_bounds(
+                    drag.edge,
+                    drag.original_start_sec,
+                    drag.original_duration_sec,
+                    pointer_sec,
+                    audio_duration,
+                );
+            }
+            MemoEditDrag::Move(drag) => {
+                (drag.proposed_start_sec, drag.proposed_pitch_midi) = moved_memo_position(
+                    drag.duration_sec,
+                    drag.start_offset_sec,
+                    drag.pitch_offset_midi,
+                    pointer_sec,
+                    pointer_pitch_midi,
+                    audio_duration,
+                );
+            }
+        }
+        ui.ctx().data_mut(|data| data.insert_temp(drag_id, drag));
+    }
+
+    let stopped_drag = response
+        .drag_stopped_by(egui::PointerButton::Secondary)
+        .then(|| {
+            let drag = ui.ctx().data(|data| data.get_temp::<MemoEditDrag>(drag_id));
+            ui.ctx()
+                .data_mut(|data| data.remove::<MemoEditDrag>(drag_id));
+            drag
+        })
+        .flatten();
+    if let Some(drag) = stopped_drag {
+        let (start_sec, duration_sec, pitch_midi) = drag.proposed_bounds();
+        state
+            .project
+            .update_memo(drag.selected(), start_sec, duration_sec, pitch_midi);
+    } else if response.clicked_by(egui::PointerButton::Secondary)
+        && let Some(pointer_pos) = response.interact_pointer_pos()
+        && content_rect.contains(pointer_pos)
+        && let Some(hit) = find_memo_hit(pointer_pos, state, content_rect, view_start, view_end)
+    {
+        state.project.delete_memo(hit.selected);
+    }
+
+    ui.ctx().data(|data| data.get_temp::<MemoEditDrag>(drag_id))
+}
+
+fn memo_hover_cursor(
+    response: &egui::Response,
+    state: &AppState,
+    content_rect: egui::Rect,
+    view_start: f64,
+    view_end: f64,
+) -> Option<MemoHoverCursor> {
+    let pointer_pos = response.hover_pos()?;
+    if !content_rect.contains(pointer_pos) {
+        return None;
+    }
+    let hit = find_memo_hit(pointer_pos, state, content_rect, view_start, view_end)?;
+    Some(if hit.edge.is_some() {
+        MemoHoverCursor::Resize
+    } else {
+        MemoHoverCursor::Move(pointer_pos)
+    })
+}
+
+fn draw_memo_move_cursor(painter: &egui::Painter, position: egui::Pos2) {
+    let dark = Stroke::new(3.0, Color32::from_rgba_unmultiplied(0, 0, 0, 210));
+    let light = Stroke::new(1.2, Color32::WHITE);
+    for stroke in [dark, light] {
+        painter.line_segment(
+            [
+                position + egui::vec2(-8.0, 0.0),
+                position + egui::vec2(8.0, 0.0),
+            ],
+            stroke,
+        );
+        painter.line_segment(
+            [
+                position + egui::vec2(0.0, -8.0),
+                position + egui::vec2(0.0, 8.0),
+            ],
+            stroke,
+        );
+        for (tip, first, second) in [
+            (
+                egui::vec2(-8.0, 0.0),
+                egui::vec2(-4.5, -3.5),
+                egui::vec2(-4.5, 3.5),
+            ),
+            (
+                egui::vec2(8.0, 0.0),
+                egui::vec2(4.5, -3.5),
+                egui::vec2(4.5, 3.5),
+            ),
+            (
+                egui::vec2(0.0, -8.0),
+                egui::vec2(-3.5, -4.5),
+                egui::vec2(3.5, -4.5),
+            ),
+            (
+                egui::vec2(0.0, 8.0),
+                egui::vec2(-3.5, 4.5),
+                egui::vec2(3.5, 4.5),
+            ),
+        ] {
+            painter.line_segment([position + tip, position + first], stroke);
+            painter.line_segment([position + tip, position + second], stroke);
+        }
+    }
+}
+
+fn draw_pitch_memos(
+    painter: &egui::Painter,
+    content_rect: egui::Rect,
+    state: &AppState,
+    view_start: f64,
+    view_end: f64,
+    edit_drag: Option<&MemoEditDrag>,
+) {
+    let painter = painter.with_clip_rect(content_rect);
+    let selected_layer_id = state.project.editing.selected_layer_id;
+
+    for layer in state
+        .project
+        .data
+        .layers
+        .iter()
+        .filter(|layer| Some(layer.id) != selected_layer_id)
+    {
+        draw_memo_layer(
+            &painter,
+            content_rect,
+            state,
+            layer,
+            view_start,
+            view_end,
+            edit_drag,
+        );
+    }
+    if let Some(layer) = state
+        .project
+        .data
+        .layers
+        .iter()
+        .find(|layer| Some(layer.id) == selected_layer_id)
+    {
+        draw_memo_layer(
+            &painter,
+            content_rect,
+            state,
+            layer,
+            view_start,
+            view_end,
+            edit_drag,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_memo_layer(
+    painter: &egui::Painter,
+    content_rect: egui::Rect,
+    state: &AppState,
+    layer: &PitchMemoLayer,
+    view_start: f64,
+    view_end: f64,
+    edit_drag: Option<&MemoEditDrag>,
+) {
+    if !layer.visible {
+        return;
+    }
+    let base_color = layer_color(layer.id.get());
+    let alpha = (layer.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let fill =
+        Color32::from_rgba_unmultiplied(base_color.r(), base_color.g(), base_color.b(), alpha);
+    for memo in &layer.memos {
+        let selected = SelectedMemo {
+            layer_id: layer.id,
+            memo_id: memo.id,
+        };
+        let (start_sec, duration_sec, pitch_midi) = edit_drag
+            .filter(|drag| drag.selected() == selected)
+            .map(|drag| drag.proposed_bounds())
+            .unwrap_or((memo.start_sec, memo.duration_sec, memo.pitch_midi));
+        let Some(geometry) = memo_geometry(
+            start_sec,
+            duration_sec,
+            pitch_midi,
+            state,
+            content_rect,
+            view_start,
+            view_end,
+        ) else {
+            continue;
+        };
+        painter.rect_filled(geometry.rect, 2.0, fill);
+        let is_selected = state.project.editing.selected_memo == Some(selected);
+        painter.rect_stroke(
+            geometry.rect,
+            2.0,
+            Stroke::new(
+                if is_selected { 2.0 } else { 1.0 },
+                memo_stroke_color(base_color, is_selected, alpha),
+            ),
+            egui::StrokeKind::Inside,
+        );
+        for x in [geometry.start_handle_x, geometry.end_handle_x]
+            .into_iter()
+            .flatten()
+        {
+            painter.rect_filled(
+                egui::Rect::from_center_size(
+                    egui::pos2(x, geometry.rect.center().y),
+                    egui::vec2(3.0, geometry.rect.height().max(5.0)),
+                ),
+                1.0,
+                Color32::from_rgba_unmultiplied(255, 255, 255, 210),
+            );
+        }
+    }
+}
+
+fn memo_stroke_color(base_color: Color32, selected: bool, alpha: u8) -> Color32 {
+    let color = if selected { Color32::WHITE } else { base_color };
+    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MemoGeometry {
+    rect: egui::Rect,
+    start_handle_x: Option<f32>,
+    end_handle_x: Option<f32>,
+}
+
+fn memo_geometry(
+    start_sec: f64,
+    duration_sec: f64,
+    pitch_midi: i32,
+    state: &AppState,
+    content_rect: egui::Rect,
+    view_start: f64,
+    view_end: f64,
+) -> Option<MemoGeometry> {
+    let end_sec = start_sec + duration_sec;
+    if end_sec < view_start || start_sec > view_end {
+        return None;
+    }
+    let pitch_view = state.pitch_view();
+    if pitch_midi < pitch_view.min_midi_note as i32 || pitch_midi > pitch_view.max_midi_note as i32
+    {
+        return None;
+    }
+    let view_duration = (view_end - view_start).max(0.001);
+    let raw_start_x = time_to_x(start_sec, view_start, view_duration, content_rect);
+    let raw_end_x = time_to_x(end_sec, view_start, view_duration, content_rect);
+    let start_x = raw_start_x.clamp(content_rect.left(), content_rect.right());
+    let end_x = raw_end_x.clamp(content_rect.left(), content_rect.right());
+    let pitch_index = pitch_midi as usize - pitch_view.min_midi_note;
+    let pitch_count = pitch_view.pitch_count().max(1);
+    let bottom = egui::lerp(
+        content_rect.bottom()..=content_rect.top(),
+        pitch_index as f32 / pitch_count as f32,
+    );
+    let top = egui::lerp(
+        content_rect.bottom()..=content_rect.top(),
+        (pitch_index + 1) as f32 / pitch_count as f32,
+    );
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(start_x, top + 1.0),
+        egui::pos2(end_x.max(start_x + 1.0), bottom - 1.0),
+    );
+    Some(MemoGeometry {
+        rect,
+        start_handle_x: (start_sec >= view_start && start_sec <= view_end).then_some(raw_start_x),
+        end_handle_x: (end_sec >= view_start && end_sec <= view_end).then_some(raw_end_x),
+    })
+}
+
+fn find_memo_hit(
+    pointer_pos: egui::Pos2,
+    state: &AppState,
+    content_rect: egui::Rect,
+    view_start: f64,
+    view_end: f64,
+) -> Option<MemoHit> {
+    let selected_layer_id = state.project.editing.selected_layer_id;
+    if let Some(layer) = state
+        .project
+        .data
+        .layers
+        .iter()
+        .find(|layer| Some(layer.id) == selected_layer_id && layer.visible)
+        && let Some(hit) = find_memo_hit_in_layer(
+            pointer_pos,
+            state,
+            layer,
+            content_rect,
+            view_start,
+            view_end,
+        )
+    {
+        return Some(hit);
+    }
+    state
+        .project
+        .data
+        .layers
+        .iter()
+        .rev()
+        .filter(|layer| Some(layer.id) != selected_layer_id && layer.visible)
+        .find_map(|layer| {
+            find_memo_hit_in_layer(
+                pointer_pos,
+                state,
+                layer,
+                content_rect,
+                view_start,
+                view_end,
+            )
+        })
+}
+
+fn find_memo_hit_in_layer(
+    pointer_pos: egui::Pos2,
+    state: &AppState,
+    layer: &PitchMemoLayer,
+    content_rect: egui::Rect,
+    view_start: f64,
+    view_end: f64,
+) -> Option<MemoHit> {
+    layer.memos.iter().rev().find_map(|memo| {
+        let geometry = memo_geometry(
+            memo.start_sec,
+            memo.duration_sec,
+            memo.pitch_midi,
+            state,
+            content_rect,
+            view_start,
+            view_end,
+        )?;
+        if !geometry.rect.expand(2.0).contains(pointer_pos) {
+            return None;
+        }
+        let start_distance = geometry
+            .start_handle_x
+            .map(|x| (pointer_pos.x - x).abs())
+            .unwrap_or(f32::INFINITY);
+        let end_distance = geometry
+            .end_handle_x
+            .map(|x| (pointer_pos.x - x).abs())
+            .unwrap_or(f32::INFINITY);
+        let edge = if start_distance <= MEMO_HANDLE_HIT_RADIUS && start_distance <= end_distance {
+            Some(MemoEdge::Start)
+        } else if end_distance <= MEMO_HANDLE_HIT_RADIUS {
+            Some(MemoEdge::End)
+        } else {
+            None
+        };
+        Some(MemoHit {
+            selected: SelectedMemo {
+                layer_id: layer.id,
+                memo_id: memo.id,
+            },
+            edge,
+        })
+    })
+}
+
+fn resized_memo_bounds(
+    edge: MemoEdge,
+    original_start_sec: f64,
+    original_duration_sec: f64,
+    pointer_sec: f64,
+    audio_duration: f64,
+) -> (f64, f64) {
+    let original_end_sec = original_start_sec + original_duration_sec;
+    match edge {
+        MemoEdge::Start => {
+            let start_sec =
+                pointer_sec.clamp(0.0, (original_end_sec - MIN_MEMO_DURATION_SECONDS).max(0.0));
+            (start_sec, original_end_sec - start_sec)
+        }
+        MemoEdge::End => {
+            let end_sec = pointer_sec.clamp(
+                original_start_sec + MIN_MEMO_DURATION_SECONDS,
+                audio_duration.max(original_start_sec + MIN_MEMO_DURATION_SECONDS),
+            );
+            (original_start_sec, end_sec - original_start_sec)
+        }
+    }
+}
+
+fn moved_memo_position(
+    duration_sec: f64,
+    start_offset_sec: f64,
+    pitch_offset_midi: i32,
+    pointer_sec: f64,
+    pointer_pitch_midi: i32,
+    audio_duration: f64,
+) -> (f64, i32) {
+    let start_sec =
+        (pointer_sec - start_offset_sec).clamp(0.0, (audio_duration - duration_sec).max(0.0));
+    let pitch_midi = (pointer_pitch_midi - pitch_offset_midi).clamp(0, 127);
+    (start_sec, pitch_midi)
+}
+
+fn x_to_time(x: f32, view_start: f64, view_end: f64, rect: egui::Rect) -> f64 {
+    let t = ((x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;
+    view_start + (view_end - view_start) * t
+}
+
+fn time_to_x(seconds: f64, view_start: f64, view_duration: f64, rect: egui::Rect) -> f32 {
+    rect.left() + ((seconds - view_start) / view_duration) as f32 * rect.width()
+}
+
+fn y_to_pitch(y: f32, state: &AppState, rect: egui::Rect) -> i32 {
+    let pitch_view = state.pitch_view();
+    let t = ((rect.bottom() - y) / rect.height()).clamp(0.0, 0.999_999);
+    (pitch_view.min_midi_note + (t * pitch_view.pitch_count() as f32).floor() as usize) as i32
+}
+
+pub(crate) fn layer_color(layer_id: u64) -> Color32 {
+    const PALETTE: [Color32; 6] = [
+        Color32::from_rgb(72, 202, 228),
+        Color32::from_rgb(255, 159, 67),
+        Color32::from_rgb(78, 205, 126),
+        Color32::from_rgb(255, 105, 180),
+        Color32::from_rgb(255, 209, 102),
+        Color32::from_rgb(162, 125, 255),
+    ];
+    layer_id
+        .checked_sub(1)
+        .and_then(|index| usize::try_from(index).ok())
+        .and_then(|index| PALETTE.get(index).copied())
+        .unwrap_or(Color32::WHITE)
 }
 
 fn draw_spectrogram_body(
@@ -313,10 +932,32 @@ fn draw_spectrogram_body(
         width_pixels,
         height_pixels,
         gain_bits: state.spectrogram_gain_db.to_bits(),
-        emphasis_bits: state.fundamental_emphasis.to_bits(),
-        emphasized_pitch_classes: state.emphasized_pitch_classes,
-        attenuation_bits: state.unemphasized_pitch_attenuation.to_bits(),
-        equalizer_gain_bits: state.playback.dsp.equalizer.gains_db.map(f32::to_bits),
+        emphasis_bits: state
+            .project
+            .data
+            .project_settings
+            .fundamental_analysis
+            .emphasis
+            .to_bits(),
+        emphasized_pitch_classes: state
+            .project
+            .data
+            .project_settings
+            .fundamental_analysis
+            .emphasized_pitch_classes,
+        attenuation_bits: state
+            .project
+            .data
+            .project_settings
+            .fundamental_analysis
+            .unemphasized_pitch_attenuation
+            .to_bits(),
+        equalizer_gain_bits: state
+            .project
+            .data
+            .project_settings
+            .equalizer_gains_db
+            .map(f32::to_bits),
     };
     if cache.key.as_ref() != Some(&key) {
         let image = render_spectrogram_image(
@@ -385,15 +1026,16 @@ fn render_spectrogram_image(
     let visible_pitches = last_pitch_exclusive.saturating_sub(first_pitch).max(1);
     let columns = drawing_column_count(visible_frames, width_pixels as f32, 1.0);
     let display_gain = 10.0_f32.powf(state.spectrogram_gain_db / 20.0);
+    let project_settings = &state.project.data.project_settings;
+    let analysis = &project_settings.fundamental_analysis;
 
     for pitch in first_pitch..last_pitch_exclusive {
         let midi_note = spectrogram.min_midi_note + pitch;
-        let is_emphasized_pitch = state.emphasized_pitch_classes[midi_note % 12];
-        let equalizer_gain = state
-            .playback
-            .dsp
-            .equalizer
-            .gain_for_frequency_hz(midi_to_frequency_hz(midi_note));
+        let is_emphasized_pitch = analysis.emphasized_pitch_classes[midi_note % 12];
+        let equalizer_gain = EqualizerSettings {
+            gains_db: project_settings.equalizer_gains_db,
+        }
+        .gain_for_frequency_hz(midi_to_frequency_hz(midi_note));
         let y_start = height_pixels - (pitch - first_pitch + 1) * height_pixels / visible_pitches;
         let y_end = height_pixels - (pitch - first_pitch) * height_pixels / visible_pitches;
 
@@ -406,7 +1048,7 @@ fn render_spectrogram_image(
                 let raw = (spectrogram.intensity_at(frame_index, pitch) * display_gain)
                     .clamp(0.0, 1.0)
                     * equalizer_gain;
-                let fundamental = if state.fundamental_emphasis > 0.0 {
+                let fundamental = if analysis.emphasis > 0.0 {
                     (spectrogram.fundamental_strength_at(frame_index, pitch) * display_gain)
                         .clamp(0.0, 1.0)
                         * equalizer_gain
@@ -418,10 +1060,10 @@ fn render_spectrogram_image(
                         raw,
                         fundamental,
                         is_emphasized_pitch,
-                        state.fundamental_emphasis,
+                        analysis.emphasis,
                     ),
                     is_emphasized_pitch,
-                    state.unemphasized_pitch_attenuation,
+                    analysis.unemphasized_pitch_attenuation,
                 )
             });
             if intensity <= 0.01 {
@@ -614,9 +1256,14 @@ fn lerp_rgb(from: (u8, u8, u8), to: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_fundamental_emphasis, apply_unemphasized_pitch_attenuation, column_frame_range,
-        drawing_column_count, peak_display_strength, subpixel_columns,
+        MemoEdge, apply_fundamental_emphasis, apply_unemphasized_pitch_attenuation,
+        column_frame_range, drawing_column_count, find_memo_hit, layer_color, memo_geometry,
+        memo_stroke_color, moved_memo_position, peak_display_strength, resized_memo_bounds,
+        subpixel_columns,
     };
+    use crate::app::state::AppState;
+    use crate::model::Track;
+    use eframe::egui;
 
     #[test]
     fn downsampling_covers_every_frame_once_and_preserves_brief_peaks() {
@@ -681,5 +1328,66 @@ mod tests {
 
         assert_eq!(columns[0], (100.0, 0.5));
         assert_eq!(columns[1], (100.5, 0.5));
+    }
+
+    #[test]
+    fn memo_resize_preserves_the_opposite_edge_and_minimum_duration() {
+        assert_eq!(
+            resized_memo_bounds(MemoEdge::Start, 2.0, 1.0, 2.75, 10.0),
+            (2.75, 0.25)
+        );
+        let (start, duration) = resized_memo_bounds(MemoEdge::End, 2.0, 1.0, 1.0, 10.0);
+        assert_eq!(start, 2.0);
+        assert!((duration - 0.01).abs() < f64::EPSILON);
+        assert_eq!(
+            resized_memo_bounds(MemoEdge::End, 2.0, 1.0, 20.0, 10.0),
+            (2.0, 8.0)
+        );
+    }
+
+    #[test]
+    fn moving_a_memo_preserves_grab_offset_and_stays_in_bounds() {
+        assert_eq!(moved_memo_position(0.5, 0.2, 3, 4.0, 70, 10.0), (3.8, 67));
+        assert_eq!(moved_memo_position(0.5, 0.2, 3, -1.0, -10, 10.0), (0.0, 0));
+        assert_eq!(
+            moved_memo_position(0.5, 0.2, 3, 20.0, 140, 10.0),
+            (9.5, 127)
+        );
+    }
+
+    #[test]
+    fn selected_layer_wins_when_memos_overlap() {
+        let mut state = AppState {
+            track: Some(Track {
+                duration_seconds: 10.0,
+                ..Track::default()
+            }),
+            ..AppState::default()
+        };
+        let selected_layer = state.project.editing.selected_layer_id.unwrap();
+        state.project.add_memo(selected_layer, 1.0, 1.0, 60);
+        let front_layer = state.project.data.layers[1].id;
+        state.project.add_memo(front_layer, 1.0, 1.0, 60);
+        state.project.editing.selected_layer_id = Some(selected_layer);
+        let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 100.0));
+        let geometry = memo_geometry(1.0, 1.0, 60, &state, rect, 0.0, 10.0).unwrap();
+
+        let hit = find_memo_hit(geometry.rect.center(), &state, rect, 0.0, 10.0).unwrap();
+
+        assert_eq!(hit.selected.layer_id, selected_layer);
+    }
+
+    #[test]
+    fn layer_palette_uses_white_after_the_sixth_id() {
+        assert_ne!(layer_color(1), egui::Color32::WHITE);
+        assert_eq!(layer_color(7), egui::Color32::WHITE);
+    }
+
+    #[test]
+    fn memo_outline_uses_the_layer_opacity() {
+        let base = egui::Color32::from_rgb(10, 20, 30);
+
+        assert_eq!(memo_stroke_color(base, false, 96).a(), 96);
+        assert_eq!(memo_stroke_color(base, true, 96).a(), 96);
     }
 }

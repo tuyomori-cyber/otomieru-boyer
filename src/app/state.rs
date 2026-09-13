@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::audio::preview_tone::PreviewTimbre;
-use crate::model::{PlaybackState, Selection, Track};
+use crate::model::{PlaybackState, ProjectState, Selection, Track};
 
 const MIN_VIEW_SEGMENTS: usize = 8;
 const MAX_VIEW_SEGMENTS: usize = 48;
@@ -13,36 +13,6 @@ const MAX_PITCH_ZOOM: f64 = 16.0;
 pub const PITCH_CLASS_NAMES: [&str; 12] = [
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
 ];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScalePreset {
-    Major,
-    Minor,
-    Pentatonic,
-    Chromatic,
-}
-
-impl ScalePreset {
-    pub const ALL: [Self; 4] = [Self::Major, Self::Minor, Self::Pentatonic, Self::Chromatic];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Major => "Major",
-            Self::Minor => "Minor",
-            Self::Pentatonic => "Pentatonic",
-            Self::Chromatic => "Chromatic",
-        }
-    }
-
-    fn intervals(self) -> &'static [usize] {
-        match self {
-            Self::Major => &[0, 2, 4, 5, 7, 9, 11],
-            Self::Minor => &[0, 2, 3, 5, 7, 8, 10],
-            Self::Pentatonic => &[0, 2, 4, 7, 9],
-            Self::Chromatic => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct SpectrogramView {
@@ -83,6 +53,7 @@ impl PitchView {
 
 pub struct AppState {
     pub track: Option<Track>,
+    pub project: ProjectState,
     pub playback: PlaybackState,
     pub ui_frame_metrics: UiFrameMetrics,
     /// 音声コールバックの位置をUI用に時間補間した再生位置。
@@ -95,19 +66,12 @@ pub struct AppState {
     pub loaded_file_path: Option<PathBuf>,
     pub status_text: String,
     pub spectrogram_gain_db: f32,
-    /// Raw表示から基音候補表示へ寄せる割合。0 はRaw表示、100 は最大強調。
-    pub fundamental_emphasis: f32,
-    pub scale_root: usize,
-    pub scale_preset: ScalePreset,
-    pub emphasized_pitch_classes: [bool; 12],
-    /// 指定外の音程を表示上で減衰する割合。0 は減衰なし、100 は非表示。
-    pub unemphasized_pitch_attenuation: f32,
     /// スペクトログラムを押下している間に試聴している音。MIDI番号をUI間で共有する。
     pub preview_midi_note: Option<u8>,
     /// スペクトログラム押下中の試聴音の出力振幅。
     pub preview_tone_amplitude: f32,
-    /// 試聴音のA4基準周波数。スペクトログラムの解析・表示は変更しない。
-    pub preview_reference_a4_hz: f32,
+    /// 元音源の再生音量。音高メモとスペクトログラム押下時の試聴音には影響しない。
+    pub source_audio_volume: f32,
     pub preview_timbre: PreviewTimbre,
     pub settings_popup_open: bool,
 }
@@ -122,13 +86,18 @@ impl AppState {
                 .and_then(|name| name.to_str())
                 .unwrap_or("読み込み済み音源");
 
-            format!(
+            let track_status = format!(
                 "{file_name} | {:.2} sec | {} Hz | {} ch | samples: {}",
                 track.duration_seconds,
                 track.sample_rate,
                 track.channels,
                 track.samples.len()
-            )
+            );
+            if self.status_text.is_empty() {
+                track_status
+            } else {
+                format!("{track_status} | {}", self.status_text)
+            }
         } else if !self.status_text.is_empty() {
             self.status_text.clone()
         } else {
@@ -140,16 +109,16 @@ impl AppState {
         self.status_text = status.into();
     }
 
-    pub fn apply_scale_preset(&mut self) {
-        self.emphasized_pitch_classes = [false; 12];
-        for interval in self.scale_preset.intervals() {
-            self.emphasized_pitch_classes[(self.scale_root + interval) % 12] = true;
-        }
+    pub fn sync_project_playback_settings(&mut self) {
+        self.playback.dsp.equalizer.gains_db =
+            self.project.data.project_settings.equalizer_gains_db;
     }
 
     pub fn set_loaded_track(&mut self, path: PathBuf, track: Track) {
         self.loaded_file_path = Some(path);
         self.track = Some(track);
+        self.project = ProjectState::new();
+        self.project.mark_saved();
         self.playback = PlaybackState::default();
         self.display_playhead_position_seconds = 0.0;
         self.view_start_seconds = 0.0;
@@ -298,6 +267,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             track: None,
+            project: ProjectState::default(),
             playback: PlaybackState::default(),
             ui_frame_metrics: UiFrameMetrics::default(),
             display_playhead_position_seconds: 0.0,
@@ -309,16 +279,9 @@ impl Default for AppState {
             loaded_file_path: None,
             status_text: String::new(),
             spectrogram_gain_db: 0.0,
-            fundamental_emphasis: 0.0,
-            scale_root: 0,
-            scale_preset: ScalePreset::Major,
-            emphasized_pitch_classes: [
-                true, false, true, false, true, true, false, true, false, true, false, true,
-            ],
-            unemphasized_pitch_attenuation: 0.0,
             preview_midi_note: None,
             preview_tone_amplitude: 0.16,
-            preview_reference_a4_hz: 440.0,
+            source_audio_volume: 1.0,
             preview_timbre: PreviewTimbre::Piano,
             settings_popup_open: false,
         }
@@ -343,7 +306,7 @@ fn pitch_midpoint(track: &Option<Track>) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppState, MIN_VIEW_DURATION_SECONDS, ScalePreset};
+    use super::{AppState, MIN_VIEW_DURATION_SECONDS};
     use crate::model::Track;
 
     #[test]
@@ -364,24 +327,6 @@ mod tests {
             (anchor - state.current_view_start_seconds()) / state.view_duration_seconds();
         assert!((relative - 0.75).abs() < 1e-6);
         assert!(state.view_duration_seconds() >= MIN_VIEW_DURATION_SECONDS);
-    }
-
-    #[test]
-    fn applying_a_scale_preset_updates_the_pitch_classes() {
-        let mut state = AppState {
-            scale_root: 2,
-            scale_preset: ScalePreset::Major,
-            ..AppState::default()
-        };
-
-        state.apply_scale_preset();
-
-        assert_eq!(
-            state.emphasized_pitch_classes,
-            [
-                false, true, true, false, true, false, true, true, false, true, false, true
-            ]
-        );
     }
 
     #[test]
