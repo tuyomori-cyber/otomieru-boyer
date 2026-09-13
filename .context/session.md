@@ -1,12 +1,13 @@
 # Current State
 
-Updated: 1789284921
+Updated: 1789290216
 
 Now:
-- Done: v0.1.0・v0.2.0のGit履歴を復元し、開発中のv0.3.0を含むCHANGELOGを追加
+- Done: cargo check・clippy・fmt・53テストを確認し、コンパイル／テスト上の緊急問題がないことを確認
+- Pending: specification/への文書移動に伴うMarkdownリンク切れを整理
 
 Next:
-- 実機で保存JSONから4項目が消えることと、再起動時のレイヤー初期値を確認
+- Problems一覧を確認し、エディタ診断を個別に分類
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.
@@ -18,5 +19,4 @@ Relevant:
 - cwd: /home/tuyomori/project/otomieru-boyer
 - file: .context/session.md
 - file: .context/turns.jsonl
-- file: <docs/OtoMieru Boyer v0.3.0 ― 音高メモ仕様.md>
-
+- file: specification/v0.3.0 音高メモ仕様書.md

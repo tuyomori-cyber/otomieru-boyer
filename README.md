@@ -73,7 +73,7 @@ cargo run
 cargo test
 ```
 
-詳細は[仕様書](仕様書.md)、[音高メモ仕様](<docs/OtoMieru Boyer v0.3.0 ― 音高メモ仕様.md>)、[変更履歴](CHANGELOG.md)、[アーキテクチャ](docs/architecture.md)、[外部依存関係と同梱音源](docs/dependencies.md)を参照してください。
+詳細は[全体仕様書](<specification/仕様書.md>)、[v0.3.0 音高メモ仕様書](<specification/v0.3.0 音高メモ仕様書.md>)、[変更履歴](CHANGELOG.md)、[アーキテクチャ](docs/architecture.md)、[外部依存関係と同梱音源](docs/dependencies.md)を参照してください。
 
 ## ライセンス
 

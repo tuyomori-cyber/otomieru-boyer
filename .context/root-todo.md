@@ -4,8 +4,8 @@ v0.3.0 音高メモ機能を、複数レイヤーの耳コピ作業として完�
 
 # 参照仕様
 
-- 全体仕様: `仕様書.md`
-- 音高メモ詳細: `docs/OtoMieru Boyer v0.3.0 ― 音高メモ仕様.md`
+- 全体仕様: `specification/仕様書.md`
+- 音高メモ詳細: `specification/v0.3.0 音高メモ仕様書.md`
 - 変更履歴: `CHANGELOG.md`
 - アーキテクチャ: `docs/architecture.md`
 
