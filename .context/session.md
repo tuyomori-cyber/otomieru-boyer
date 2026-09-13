@@ -1,13 +1,13 @@
 # Current State
 
-Updated: 1789290216
+Updated: 1789290678
 
 Now:
-- Done: cargo check・clippy・fmt・53テストを確認し、コンパイル／テスト上の緊急問題がないことを確認
-- Pending: specification/への文書移動に伴うMarkdownリンク切れを整理
+- Done: v0.3.0をコミットbc93d18・注釈付きタグv0.3.0としてorigin/mainへpush
+- Pending: v0.4.0仕様書は未追跡で保持
 
 Next:
-- Problems一覧を確認し、エディタ診断を個別に分類
+- v0.4.0仕様をもとに次の実装計画を整理
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.
@@ -19,4 +19,5 @@ Relevant:
 - cwd: /home/tuyomori/project/otomieru-boyer
 - file: .context/session.md
 - file: .context/turns.jsonl
-- file: specification/v0.3.0 音高メモ仕様書.md
+- file: ...音高メモ仕様.md
+
