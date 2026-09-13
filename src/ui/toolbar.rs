@@ -123,6 +123,8 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
                     .suffix("")
                     .custom_formatter(|volume, _| format!("{:.0}%", volume * 100.0)),
             );
+            ui.checkbox(&mut state.source_audio_muted, "Mute")
+                .on_hover_text("原曲だけを一時的に無音化します。原曲音量の設定値は維持されます。");
 
             ui.separator();
 

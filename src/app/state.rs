@@ -72,6 +72,8 @@ pub struct AppState {
     pub preview_tone_amplitude: f32,
     /// 元音源の再生音量。音高メモとスペクトログラム押下時の試聴音には影響しない。
     pub source_audio_volume: f32,
+    /// 元音源だけを一時的に無音化する。音量設定値は維持する。
+    pub source_audio_muted: bool,
     pub preview_timbre: PreviewTimbre,
     pub settings_popup_open: bool,
 }
@@ -112,6 +114,23 @@ impl AppState {
     pub fn sync_project_playback_settings(&mut self) {
         self.playback.dsp.equalizer.gains_db =
             self.project.data.project_settings.equalizer_gains_db;
+    }
+
+    /// 音高メモを編集できるかを返す。
+    ///
+    /// 停止中は従来どおり編集できる。再生中は、有効なループ範囲を
+    /// 繰り返している場合だけ編集を許可する。
+    pub fn can_edit_pitch_memos(&self) -> bool {
+        !self.playback.playing
+            || (self.playback.loop_enabled && self.selection.normalized().is_some())
+    }
+
+    pub fn effective_source_audio_volume(&self) -> f32 {
+        if self.source_audio_muted {
+            0.0
+        } else {
+            self.source_audio_volume
+        }
     }
 
     pub fn set_loaded_track(&mut self, path: PathBuf, track: Track) {
@@ -282,6 +301,7 @@ impl Default for AppState {
             preview_midi_note: None,
             preview_tone_amplitude: 0.16,
             source_audio_volume: 1.0,
+            source_audio_muted: false,
             preview_timbre: PreviewTimbre::Piano,
             settings_popup_open: false,
         }
@@ -343,5 +363,33 @@ mod tests {
         state.reset_view_to_start();
 
         assert_eq!(state.current_view_start_seconds(), 0.0);
+    }
+
+    #[test]
+    fn pitch_memo_editing_requires_a_valid_loop_during_playback() {
+        let mut state = AppState::default();
+        assert!(state.can_edit_pitch_memos());
+
+        state.playback.playing = true;
+        assert!(!state.can_edit_pitch_memos());
+
+        state.playback.loop_enabled = true;
+        assert!(!state.can_edit_pitch_memos());
+
+        state.selection.set_range(1.0, 2.0);
+        assert!(state.can_edit_pitch_memos());
+    }
+
+    #[test]
+    fn muting_the_source_preserves_its_configured_volume() {
+        let mut state = AppState {
+            source_audio_volume: 0.35,
+            ..AppState::default()
+        };
+        assert_eq!(state.effective_source_audio_volume(), 0.35);
+
+        state.source_audio_muted = true;
+        assert_eq!(state.effective_source_audio_volume(), 0.0);
+        assert_eq!(state.source_audio_volume, 0.35);
     }
 }

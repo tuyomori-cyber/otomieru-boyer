@@ -268,7 +268,7 @@ impl eframe::App for OtomieruApp {
         }
         self.sync_transport_state();
         self.player
-            .set_source_volume(self.state.source_audio_volume);
+            .set_source_volume(self.state.effective_source_audio_volume());
         self.sync_dsp_settings();
         if actions.seek_to_start_requested {
             self.player.seek_to_start();

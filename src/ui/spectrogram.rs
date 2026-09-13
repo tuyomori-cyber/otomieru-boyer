@@ -152,7 +152,10 @@ pub fn show(
         egui::Rect::from_min_max(rect.left_top(), rect.right_bottom() - egui::vec2(0.0, 40.0));
     let memo_edit_drag =
         handle_pitch_memo_interaction(ui, &response, state, content_rect, view_start, view_end);
-    let memo_hover_cursor = memo_hover_cursor(&response, state, content_rect, view_start, view_end);
+    let memo_hover_cursor = state
+        .can_edit_pitch_memos()
+        .then(|| memo_hover_cursor(&response, state, content_rect, view_start, view_end))
+        .flatten();
     if let Some(cursor) = memo_hover_cursor {
         ui.output_mut(|output| {
             output.cursor_icon = match cursor {
@@ -262,10 +265,12 @@ pub fn show(
     } else {
         "停止中は表示範囲だけ移動"
     };
-    let memo_controls = if state.playback.playing {
-        "音高メモ編集は停止中のみ"
-    } else {
+    let memo_controls = if !state.playback.playing {
         "音高メモ: 左ダブルクリックで追加 / 右クリックで削除 / 左右端を右ドラッグでリサイズ"
+    } else if state.can_edit_pitch_memos() {
+        "Loop再生中: 音高メモを編集可能（右ドラッグ中はズーム禁止）"
+    } else {
+        "音高メモ編集は停止中またはLoop再生中のみ"
     };
 
     painter.text(
@@ -321,7 +326,7 @@ pub fn show(
         } else if content_rect.contains(pointer_pos) {
             let (scroll_delta, ctrl_pressed) =
                 ui.input(|input| (input.raw_scroll_delta.y, input.modifiers.ctrl));
-            if scroll_delta.abs() > f32::EPSILON {
+            if scroll_delta.abs() > f32::EPSILON && memo_edit_drag.is_none() {
                 let factor = if scroll_delta > 0.0 { 1.25 } else { 0.8 };
                 if ctrl_pressed {
                     let pitch_view = state.pitch_view();
@@ -382,7 +387,7 @@ fn handle_pitch_memo_interaction(
         .as_ref()
         .map(|track| track.duration_seconds)
         .unwrap_or(0.0);
-    if audio_duration <= 0.0 || state.playback.playing {
+    if audio_duration <= 0.0 || !state.can_edit_pitch_memos() {
         return None;
     }
 

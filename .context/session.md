@@ -1,13 +1,12 @@
 # Current State
 
-Updated: 1789290678
+Updated: 1789302692
 
 Now:
-- Done: v0.3.0をコミットbc93d18・注釈付きタグv0.3.0としてorigin/mainへpush
-- Pending: v0.4.0仕様書は未追跡で保持
+- Done: トップバーの原曲音量にMuteを追加し、音量設定値を維持したまま原曲だけを無音化できるようにした。
 
 Next:
-- v0.4.0仕様をもとに次の実装計画を整理
+- 実機で原曲Muteと全レイヤーMuteによる手動比較の操作感を確認する。
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.
@@ -19,5 +18,5 @@ Relevant:
 - cwd: /home/tuyomori/project/otomieru-boyer
 - file: .context/session.md
 - file: .context/turns.jsonl
-- file: ...音高メモ仕様.md
+- file: .context/root-todo.md
 
