@@ -7,6 +7,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig};
 
 use crate::analysis::pitch_map::midi_to_frequency;
+use crate::audio::comparison::ComparisonAudioControl;
 use crate::audio::decoder::DecoderError;
 use crate::audio::piano_samples::{PianoSample, PianoSampleBank, SynthStringsSampleBank};
 
@@ -77,6 +78,7 @@ struct PreviewToneState {
     amplitude_bits: AtomicU32,
     reference_a4_hz_bits: AtomicU32,
     memo_voices: [ToneVoiceControl; MAX_MEMO_VOICES],
+    comparison_control: Arc<ComparisonAudioControl>,
 }
 
 struct ToneVoiceControl {
@@ -140,7 +142,7 @@ impl fmt::Display for PreviewToneError {
 impl std::error::Error for PreviewToneError {}
 
 impl PreviewTonePlayer {
-    pub fn new() -> Result<Self, PreviewToneError> {
+    pub fn new(comparison_control: Arc<ComparisonAudioControl>) -> Result<Self, PreviewToneError> {
         let piano_samples =
             Arc::new(PianoSampleBank::load().map_err(PreviewToneError::SampleDecode)?);
         let synth_strings_samples =
@@ -160,6 +162,7 @@ impl PreviewTonePlayer {
             amplitude_bits: AtomicU32::new(0.16f32.to_bits()),
             reference_a4_hz_bits: AtomicU32::new(DEFAULT_REFERENCE_A4_HZ.to_bits()),
             memo_voices: std::array::from_fn(|_| ToneVoiceControl::new()),
+            comparison_control,
         });
         let stream_state = Arc::clone(&state);
         let stream_samples = Arc::clone(&piano_samples);
@@ -453,6 +456,7 @@ where
                 let timbre = PreviewTimbre::from_u8(state.timbre.load(Ordering::Relaxed));
                 let reference_a4_hz =
                     f32::from_bits(state.reference_a4_hz_bits.load(Ordering::Relaxed));
+                let memos_are_audible = state.comparison_control.snapshot().memos_are_audible();
                 preview_voice.prepare(
                     state.active.load(Ordering::Relaxed),
                     0,
@@ -477,9 +481,13 @@ where
                 }
 
                 for (channel, out) in frame.iter_mut().enumerate() {
-                    let memo_mix = memo_voices.iter().fold(0.0, |mix, voice| {
-                        mix + voice.sample(channel, &piano_samples, &synth_strings_samples)
-                    });
+                    let memo_mix = if memos_are_audible {
+                        memo_voices.iter().fold(0.0, |mix, voice| {
+                            mix + voice.sample(channel, &piano_samples, &synth_strings_samples)
+                        })
+                    } else {
+                        0.0
+                    };
                     let preview =
                         preview_voice.sample(channel, &piano_samples, &synth_strings_samples);
                     *out = T::from_sample((preview + memo_mix).clamp(-1.0, 1.0));

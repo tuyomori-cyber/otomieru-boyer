@@ -1,9 +1,11 @@
+mod comparison;
 mod playback;
 mod playback_dsp;
 mod project;
 mod selection;
 mod track;
 
+pub use comparison::{ComparisonPhase, DEFAULT_COMPARISON_SEQUENCE, comparison_phase_at};
 pub use playback::PlaybackState;
 pub use playback_dsp::{
     EQ_BAND_COUNT, EQ_BAND_FREQUENCIES_HZ, EqualizerSettings, PlaybackDspSettings,

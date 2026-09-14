@@ -12,6 +12,8 @@ pub struct ToolbarActions {
     pub play_pause_requested: bool,
     pub seek_to_start_requested: bool,
     pub stop_requested: bool,
+    pub clear_loop_range_requested: bool,
+    pub comparison_enabled_changed: Option<bool>,
 }
 
 pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
@@ -97,6 +99,35 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
             ui.separator();
 
             ui.checkbox(&mut state.playback.loop_enabled, "Loop");
+            if ui
+                .add_enabled(
+                    state.selection.normalized().is_some(),
+                    egui::Button::new("消去"),
+                )
+                .on_disabled_hover_text("消去するループ範囲がありません。")
+                .on_hover_text("ループ範囲を消去します。比較中の場合は比較も終了します。")
+                .clicked()
+            {
+                actions.clear_loop_range_requested = true;
+            }
+
+            let comparison_available = state.track.is_some()
+                && state.playback.loop_enabled
+                && state.selection.normalized().is_some();
+            let mut comparison_enabled = state.playback.comparison_enabled && comparison_available;
+            if ui
+                .add_enabled(
+                    comparison_available,
+                    egui::Checkbox::new(&mut comparison_enabled, "比較"),
+                )
+                .on_disabled_hover_text("有効なループ範囲を指定してLoopをONにしてください。")
+                .changed()
+            {
+                actions.comparison_enabled_changed = Some(comparison_enabled);
+            }
+            if comparison_available && let Some(phase) = state.playback.comparison_phase() {
+                ui.label(format!("比較: {}", phase.label()));
+            }
 
             ui.separator();
 
@@ -123,8 +154,14 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
                     .suffix("")
                     .custom_formatter(|volume, _| format!("{:.0}%", volume * 100.0)),
             );
-            ui.checkbox(&mut state.source_audio_muted, "Mute")
-                .on_hover_text("原曲だけを一時的に無音化します。原曲音量の設定値は維持されます。");
+            ui.add_enabled_ui(!state.playback.comparison_enabled, |ui| {
+                ui.checkbox(&mut state.source_audio_muted, "Mute")
+                    .on_hover_text(
+                        "原曲だけを一時的に無音化します。原曲音量の設定値は維持されます。",
+                    );
+            })
+            .response
+            .on_disabled_hover_text("比較中の原曲MuteはOriginal / Notes / Mixが自動制御します。");
 
             ui.separator();
 

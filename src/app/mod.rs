@@ -26,19 +26,23 @@ pub struct OtomieruApp {
     playhead_interpolator: PlayheadInterpolator,
     ui_frame_monitor: UiFrameMonitor,
     spectrogram_cache: spectrogram::SpectrogramCache,
+    comparison_loop_range: Option<(f64, f64)>,
 }
 
 impl OtomieruApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         configure_japanese_fonts(&cc.egui_ctx);
+        let player = AudioPlayer::default();
+        let comparison_control = player.comparison_control();
         Self {
             state: AppState::default(),
-            player: AudioPlayer::default(),
-            preview_tone_player: PreviewTonePlayer::new().ok(),
+            player,
+            preview_tone_player: PreviewTonePlayer::new(comparison_control).ok(),
             last_applied_dsp_settings: None,
             playhead_interpolator: PlayheadInterpolator::default(),
             ui_frame_monitor: UiFrameMonitor::default(),
             spectrogram_cache: spectrogram::SpectrogramCache::default(),
+            comparison_loop_range: None,
         }
     }
 
@@ -60,17 +64,21 @@ impl OtomieruApp {
                 let track = crate::model::Track::from_decoded(decoded);
                 match self.player.load_track(&track) {
                     Ok(()) => {
+                        self.player.disable_comparison();
                         self.state.set_loaded_track(path, track);
                         self.load_project_sidecar();
                         self.playhead_interpolator.reset(0.0);
                         self.last_applied_dsp_settings = None;
+                        self.comparison_loop_range = None;
                     }
                     Err(error) => {
+                        self.player.disable_comparison();
                         self.state.track = None;
                         self.state.loaded_file_path = None;
                         self.state.display_playhead_position_seconds = 0.0;
                         self.playhead_interpolator.reset(0.0);
                         self.last_applied_dsp_settings = None;
+                        self.comparison_loop_range = None;
                         self.state
                             .set_status(format!("再生準備に失敗しました: {error}"));
                     }
@@ -82,6 +90,8 @@ impl OtomieruApp {
                 self.state.display_playhead_position_seconds = 0.0;
                 self.playhead_interpolator.reset(0.0);
                 self.last_applied_dsp_settings = None;
+                self.player.disable_comparison();
+                self.comparison_loop_range = None;
                 self.state
                     .set_status(format!("読み込みに失敗しました: {error}"));
             }
@@ -94,6 +104,51 @@ impl OtomieruApp {
         );
         self.player
             .set_loop_range(self.state.selection.normalized());
+    }
+
+    fn set_comparison_enabled(&mut self, enabled: bool) {
+        let loop_range = self
+            .state
+            .playback
+            .loop_enabled
+            .then(|| self.state.selection.normalized())
+            .flatten();
+        if enabled {
+            let Some((loop_start, _)) = loop_range else {
+                return;
+            };
+            self.state.playback.comparison_enabled = true;
+            self.state.playback.comparison_sequence_index = 0;
+            self.comparison_loop_range = loop_range;
+            self.player.enable_comparison_from_start();
+            self.player.seek_to_seconds(loop_start);
+            self.state.playback.position_seconds = loop_start;
+            self.state.display_playhead_position_seconds = loop_start;
+            self.playhead_interpolator.reset(loop_start);
+        } else {
+            self.state.playback.comparison_enabled = false;
+            self.state.playback.comparison_sequence_index = 0;
+            self.comparison_loop_range = None;
+            self.player.disable_comparison();
+        }
+    }
+
+    fn sync_comparison_state(&mut self) {
+        let loop_range = self
+            .state
+            .playback
+            .loop_enabled
+            .then(|| self.state.selection.normalized())
+            .flatten();
+        if loop_range.is_none() {
+            self.set_comparison_enabled(false);
+            return;
+        }
+        if self.state.playback.comparison_enabled && self.comparison_loop_range != loop_range {
+            self.state.playback.comparison_sequence_index = 0;
+            self.comparison_loop_range = loop_range;
+            self.player.reset_comparison_to_start();
+        }
     }
 
     fn load_project_sidecar(&mut self) {
@@ -253,8 +308,7 @@ impl eframe::App for OtomieruApp {
             ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Space));
         let save_pressed =
             ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S));
-        let undo_pressed =
-            ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Z));
+        let undo_pressed = consume_project_undo_shortcut(ctx);
         let actions = toolbar::show(ctx, &mut self.state);
         if actions.open_requested {
             self.open_audio_file();
@@ -266,12 +320,24 @@ impl eframe::App for OtomieruApp {
             self.state
                 .set_status("直前の音高メモ編集を取り消しました。");
         }
+        if actions.clear_loop_range_requested {
+            self.state.selection.clear();
+            self.state
+                .set_status("ループ範囲を消去しました。曲先頭へは |< を使います。");
+        }
+        if let Some(enabled) = actions.comparison_enabled_changed {
+            self.set_comparison_enabled(enabled);
+        }
+        self.sync_comparison_state();
         self.sync_transport_state();
         self.player
-            .set_source_volume(self.state.effective_source_audio_volume());
+            .set_source_volume(self.state.source_audio_volume);
+        self.player.set_source_muted(self.state.source_audio_muted);
         self.sync_dsp_settings();
         if actions.seek_to_start_requested {
             self.player.seek_to_start();
+            self.player.reset_comparison_to_start();
+            self.state.playback.comparison_sequence_index = 0;
             self.state.playback.position_seconds = 0.0;
             self.state.display_playhead_position_seconds = 0.0;
             self.state.reset_view_to_start();
@@ -290,6 +356,8 @@ impl eframe::App for OtomieruApp {
         }
         if actions.stop_requested {
             self.player.stop();
+            self.player.reset_comparison_to_start();
+            self.state.playback.comparison_sequence_index = 0;
             self.state.playback.playing = false;
             self.state.playback.position_seconds = 0.0;
             self.state.display_playhead_position_seconds = 0.0;
@@ -300,6 +368,9 @@ impl eframe::App for OtomieruApp {
         let snapshot = self.player.snapshot();
         self.state.playback.playing = snapshot.transport == TransportState::Playing;
         self.state.playback.position_seconds = snapshot.position_seconds;
+        self.state.playback.comparison_enabled = snapshot.comparison.phase.is_some();
+        self.state.playback.comparison_sequence_index =
+            snapshot.comparison.sequence_index.unwrap_or(0);
         self.sync_pitch_memo_playback(&snapshot);
         self.state.display_playhead_position_seconds = self.playhead_interpolator.update(
             snapshot.position_seconds,
@@ -313,6 +384,7 @@ impl eframe::App for OtomieruApp {
             ui.vertical(|ui| {
                 ui.add_space(4.0);
                 let _timeline_actions = timeline::show(ui, &mut self.state, 108.0);
+                self.sync_comparison_state();
                 self.sync_transport_state();
                 self.sync_dsp_settings();
                 ui.add_space(4.0);
@@ -335,6 +407,11 @@ impl eframe::App for OtomieruApp {
                     }
                     if let Some(view_start_seconds) = spectrogram_actions.view_start_seconds {
                         self.state.set_view_start_seconds(view_start_seconds);
+                    }
+                    if let Some(pitch_view_center_midi) = spectrogram_actions.pitch_view_center_midi
+                    {
+                        self.state
+                            .set_pitch_view_center_midi(pitch_view_center_midi);
                     }
                     if let Some((anchor_seconds, factor)) = spectrogram_actions.zoom_at {
                         self.state.zoom_view_at(anchor_seconds, factor);
@@ -381,6 +458,20 @@ impl eframe::App for OtomieruApp {
             ctx.request_repaint_after(UI_REPAINT_INTERVAL);
         }
     }
+}
+
+/// テキスト入力にフォーカスがある間は、TextEdit自身のUndoを優先する。
+///
+/// アプリ全体のメモUndoは、テキスト編集ではないときだけ処理する。
+fn consume_project_undo_shortcut(ctx: &egui::Context) -> bool {
+    if !should_handle_project_undo(ctx.wants_keyboard_input()) {
+        return false;
+    }
+    ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Z))
+}
+
+fn should_handle_project_undo(wants_keyboard_input: bool) -> bool {
+    !wants_keyboard_input
 }
 
 fn mismatch_labels(mismatches: &[AudioMismatch]) -> String {
@@ -485,7 +576,9 @@ impl PlayheadInterpolator {
 
 #[cfg(test)]
 mod tests {
-    use super::{PlayheadInterpolator, UiFrameMonitor, active_memo_tone_requests};
+    use super::{
+        PlayheadInterpolator, UiFrameMonitor, active_memo_tone_requests, should_handle_project_undo,
+    };
     use crate::model::ProjectState;
     use std::time::{Duration, Instant};
 
@@ -578,5 +671,11 @@ mod tests {
         assert!((metrics.frame_time_ms - 20.0).abs() < 1e-3);
         assert!((metrics.frames_per_second - 50.0).abs() < 1e-3);
         assert_eq!(metrics.pixels_per_point, 1.5);
+    }
+
+    #[test]
+    fn project_undo_defers_to_focused_text_input() {
+        assert!(!should_handle_project_undo(true));
+        assert!(should_handle_project_undo(false));
     }
 }

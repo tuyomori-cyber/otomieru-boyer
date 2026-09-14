@@ -125,14 +125,6 @@ impl AppState {
             || (self.playback.loop_enabled && self.selection.normalized().is_some())
     }
 
-    pub fn effective_source_audio_volume(&self) -> f32 {
-        if self.source_audio_muted {
-            0.0
-        } else {
-            self.source_audio_volume
-        }
-    }
-
     pub fn set_loaded_track(&mut self, path: PathBuf, track: Track) {
         self.loaded_file_path = Some(path);
         self.track = Some(track);
@@ -202,7 +194,10 @@ impl AppState {
     }
 
     pub fn pitch_view(&self) -> PitchView {
-        let (minimum, maximum) = pitch_bounds(&self.track);
+        let PitchView {
+            min_midi_note: minimum,
+            max_midi_note: maximum,
+        } = self.full_pitch_view();
         let total = maximum.saturating_sub(minimum).saturating_add(1);
         let visible = ((total as f64 / self.pitch_zoom).ceil() as usize).clamp(1, total);
         let maximum_start = maximum.saturating_add(1).saturating_sub(visible);
@@ -215,6 +210,23 @@ impl AppState {
         }
     }
 
+    pub fn full_pitch_view(&self) -> PitchView {
+        let (minimum, maximum) = pitch_bounds(&self.track);
+        PitchView {
+            min_midi_note: minimum,
+            max_midi_note: maximum,
+        }
+    }
+
+    /// 音高表示の中心を変更する。ズーム後も表示範囲が音源の音高範囲を越えない。
+    pub fn set_pitch_view_center_midi(&mut self, midi_note: f64) {
+        let full_view = self.full_pitch_view();
+        let visible = self.pitch_view().pitch_count() as f64;
+        let minimum_center = full_view.min_midi_note as f64 + visible / 2.0;
+        let maximum_center = full_view.max_midi_note as f64 + 1.0 - visible / 2.0;
+        self.pitch_view_center_midi = midi_note.clamp(minimum_center, maximum_center);
+    }
+
     pub fn zoom_pitch_at(&mut self, anchor_midi: f64, factor: f64) {
         let old_view = self.pitch_view();
         let old_count = old_view.pitch_count() as f64;
@@ -225,9 +237,7 @@ impl AppState {
         self.pitch_zoom = (self.pitch_zoom * factor).clamp(1.0, MAX_PITCH_ZOOM.min(total));
         let new_count = self.pitch_view().pitch_count() as f64;
         self.pitch_view_center_midi = anchor_midi - new_count * anchor_ratio + new_count / 2.0;
-        self.pitch_view_center_midi = self
-            .pitch_view_center_midi
-            .clamp(minimum as f64, maximum as f64);
+        self.set_pitch_view_center_midi(self.pitch_view_center_midi);
     }
 
     pub fn advance_view_by_window(&mut self) {
@@ -366,6 +376,26 @@ mod tests {
     }
 
     #[test]
+    fn pitch_view_center_is_clamped_to_the_visible_pitch_range() {
+        let mut state = AppState {
+            pitch_zoom: 2.0,
+            ..AppState::default()
+        };
+
+        state.set_pitch_view_center_midi(f64::MAX);
+        assert_eq!(
+            state.pitch_view().max_midi_note,
+            state.full_pitch_view().max_midi_note
+        );
+
+        state.set_pitch_view_center_midi(f64::MIN);
+        assert_eq!(
+            state.pitch_view().min_midi_note,
+            state.full_pitch_view().min_midi_note
+        );
+    }
+
+    #[test]
     fn pitch_memo_editing_requires_a_valid_loop_during_playback() {
         let mut state = AppState::default();
         assert!(state.can_edit_pitch_memos());
@@ -378,18 +408,5 @@ mod tests {
 
         state.selection.set_range(1.0, 2.0);
         assert!(state.can_edit_pitch_memos());
-    }
-
-    #[test]
-    fn muting_the_source_preserves_its_configured_volume() {
-        let mut state = AppState {
-            source_audio_volume: 0.35,
-            ..AppState::default()
-        };
-        assert_eq!(state.effective_source_audio_volume(), 0.35);
-
-        state.source_audio_muted = true;
-        assert_eq!(state.effective_source_audio_volume(), 0.0);
-        assert_eq!(state.source_audio_volume, 0.35);
     }
 }

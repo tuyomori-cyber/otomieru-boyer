@@ -1,12 +1,13 @@
 # Current State
 
-Updated: 1789302692
+Updated: 1789368305
 
 Now:
-- Done: トップバーの原曲音量にMuteを追加し、音量設定値を維持したまま原曲だけを無音化できるようにした。
+- Done: 実装・テスト・仕様・README・変更履歴・ToDoの記述を整合。
+- Pending: Notes時ノイズの切り分け。
 
 Next:
-- 実機で原曲Muteと全レイヤーMuteによる手動比較の操作感を確認する。
+- Notes時ノイズを、フェーズ切替時とメモ発音開始時に分けて調査。
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.
@@ -15,8 +16,8 @@ Constraints:
 Relevant:
 - context: otomieru-boyer
 - repo: otomieru-boyer
+- repo: specification
+- repo: test
 - cwd: /home/tuyomori/project/otomieru-boyer
 - file: .context/session.md
-- file: .context/turns.jsonl
-- file: .context/root-todo.md
 

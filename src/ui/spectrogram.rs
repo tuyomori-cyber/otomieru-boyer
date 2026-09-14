@@ -8,11 +8,15 @@ use crate::model::{
 const MEMO_HANDLE_HIT_RADIUS: f32 = 7.0;
 const MIN_MEMO_DURATION_SECONDS: f64 = 0.01;
 const MEMO_EDIT_DRAG_ID: &str = "pitch-memo-edit-drag";
+const PITCH_SCROLLBAR_WIDTH: f32 = 10.0;
+const PITCH_SCROLLBAR_MARGIN: f32 = 6.0;
+const PITCH_SCROLLBAR_DRAG_ID: &str = "pitch-scrollbar-drag";
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SpectrogramActions {
     pub seek_seconds: Option<f64>,
     pub view_start_seconds: Option<f64>,
+    pub pitch_view_center_midi: Option<f64>,
     pub zoom_at: Option<(f64, f64)>,
     pub pitch_zoom_at: Option<(f64, f64)>,
     pub preview_midi_note: Option<u8>,
@@ -144,12 +148,37 @@ pub fn show(
         && state.display_playhead_position_seconds <= view_end;
     let normalized =
         ((state.display_playhead_position_seconds - view_start) / view_duration).clamp(0.0, 1.0);
-    let current_x = egui::lerp(rect.left()..=rect.right(), normalized as f32);
+    let content_rect = egui::Rect::from_min_max(
+        rect.left_top(),
+        rect.right_bottom()
+            - egui::vec2(PITCH_SCROLLBAR_WIDTH + PITCH_SCROLLBAR_MARGIN * 2.0, 40.0),
+    );
+    let current_x = egui::lerp(
+        content_rect.left()..=content_rect.right(),
+        normalized as f32,
+    );
+    let pitch_scrollbar_rect = egui::Rect::from_min_max(
+        egui::pos2(
+            content_rect.right() + PITCH_SCROLLBAR_MARGIN,
+            content_rect.top(),
+        ),
+        egui::pos2(rect.right() - PITCH_SCROLLBAR_MARGIN, content_rect.bottom()),
+    );
+    let pitch_scrollbar_drag_id = ui.id().with(PITCH_SCROLLBAR_DRAG_ID);
+    let mut pitch_scrollbar_dragging = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(pitch_scrollbar_drag_id))
+        .unwrap_or(false);
+    if response.drag_started_by(egui::PointerButton::Primary)
+        && let Some(pointer_pos) = ui.input(|input| input.pointer.press_origin())
+        && pitch_scrollbar_rect.contains(pointer_pos)
+    {
+        pitch_scrollbar_dragging = true;
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(pitch_scrollbar_drag_id, true));
+    }
 
-    draw_spectrogram_body(&painter, rect, state, view_start, view_end, cache);
-
-    let content_rect =
-        egui::Rect::from_min_max(rect.left_top(), rect.right_bottom() - egui::vec2(0.0, 40.0));
+    draw_spectrogram_body(&painter, content_rect, state, view_start, view_end, cache);
     let memo_edit_drag =
         handle_pitch_memo_interaction(ui, &response, state, content_rect, view_start, view_end);
     let memo_hover_cursor = state
@@ -177,13 +206,14 @@ pub fn show(
     if let Some(MemoHoverCursor::Move(position)) = memo_hover_cursor {
         draw_memo_move_cursor(&painter, position);
     }
+    draw_pitch_scrollbar(&painter, pitch_scrollbar_rect, state);
 
     let page_bar_height = 16.0;
     let page_bar_margin = 14.0;
     let page_bar_rect = egui::Rect::from_min_max(
-        egui::pos2(rect.left() + page_bar_margin, rect.bottom() - 28.0),
+        egui::pos2(content_rect.left() + page_bar_margin, rect.bottom() - 28.0),
         egui::pos2(
-            rect.right() - page_bar_margin,
+            content_rect.right() - page_bar_margin,
             rect.bottom() - 28.0 + page_bar_height,
         ),
     );
@@ -192,8 +222,8 @@ pub fn show(
         draw_subpixel_playhead(
             &painter,
             pixels_per_point,
-            rect.top(),
-            rect.bottom(),
+            content_rect.top(),
+            content_rect.bottom(),
             current_x,
         );
     }
@@ -261,9 +291,9 @@ pub fn show(
     );
 
     let overlay = if state.playback.playing {
-        "再生中は1画面ぶん更新 / 縦線追従"
+        "下部バーで表示範囲を移動 / 縦線は表示中のみ追従"
     } else {
-        "停止中は表示範囲だけ移動"
+        "下部バーで表示範囲を移動"
     };
     let memo_controls = if !state.playback.playing {
         "音高メモ: 左ダブルクリックで追加 / 右クリックで削除 / 左右端を右ドラッグでリサイズ"
@@ -314,8 +344,31 @@ pub fn show(
         Color32::from_rgb(165, 188, 204),
     );
 
-    if let Some(pointer_pos) = response.hover_pos() {
-        if page_bar_rect.contains(pointer_pos) && !state.playback.playing {
+    if pitch_scrollbar_dragging {
+        if let Some(pointer_pos) = response.interact_pointer_pos() {
+            let pointer_t = ((pointer_pos.y - pitch_scrollbar_rect.top())
+                / pitch_scrollbar_rect.height())
+            .clamp(0.0, 1.0) as f64;
+            actions.pitch_view_center_midi = Some(pitch_scroll_center_for_pointer(
+                state.full_pitch_view(),
+                state.pitch_view(),
+                pointer_t,
+            ));
+        }
+    } else if let Some(pointer_pos) = response.hover_pos() {
+        if pitch_scrollbar_rect.contains(pointer_pos) {
+            let pointer_down = ui.input(|input| input.pointer.primary_down());
+            if response.clicked() || pointer_down {
+                let pointer_t = ((pointer_pos.y - pitch_scrollbar_rect.top())
+                    / pitch_scrollbar_rect.height())
+                .clamp(0.0, 1.0) as f64;
+                actions.pitch_view_center_midi = Some(pitch_scroll_center_for_pointer(
+                    state.full_pitch_view(),
+                    state.pitch_view(),
+                    pointer_t,
+                ));
+            }
+        } else if page_bar_rect.contains(pointer_pos) {
             let pointer_down = ui.input(|input| input.pointer.primary_down());
             if response.clicked() || pointer_down {
                 let t = ((pointer_pos.x - page_bar_rect.left()) / page_bar_rect.width())
@@ -369,6 +422,11 @@ pub fn show(
         }
     } else if state.preview_midi_note.is_some() && !ui.input(|input| input.pointer.primary_down()) {
         actions.stop_preview = true;
+    }
+
+    if response.drag_stopped_by(egui::PointerButton::Primary) {
+        ui.ctx()
+            .data_mut(|data| data.remove::<bool>(pitch_scrollbar_drag_id));
     }
 
     actions
@@ -867,6 +925,54 @@ fn y_to_pitch(y: f32, state: &AppState, rect: egui::Rect) -> i32 {
     (pitch_view.min_midi_note + (t * pitch_view.pitch_count() as f32).floor() as usize) as i32
 }
 
+fn draw_pitch_scrollbar(painter: &egui::Painter, rect: egui::Rect, state: &AppState) {
+    painter.rect_filled(
+        rect,
+        999.0,
+        Color32::from_rgba_premultiplied(255, 255, 255, 24),
+    );
+    painter.rect_stroke(
+        rect,
+        999.0,
+        Stroke::new(1.0, Color32::from_rgba_premultiplied(255, 255, 255, 48)),
+        egui::StrokeKind::Inside,
+    );
+
+    let full_view = state.full_pitch_view();
+    let visible_view = state.pitch_view();
+    let total = full_view.pitch_count().max(1) as f32;
+    let visible = visible_view.pitch_count() as f32;
+    let top_ratio = (full_view
+        .max_midi_note
+        .saturating_sub(visible_view.max_midi_note) as f32
+        / total)
+        .clamp(0.0, 1.0);
+    let height_ratio = (visible / total).clamp(0.0, 1.0);
+    let thumb_top = egui::lerp(rect.top()..=rect.bottom(), top_ratio);
+    let thumb_bottom = egui::lerp(
+        rect.top()..=rect.bottom(),
+        (top_ratio + height_ratio).min(1.0),
+    );
+    let thumb = egui::Rect::from_min_max(
+        egui::pos2(rect.left(), thumb_top),
+        egui::pos2(rect.right(), thumb_bottom.max(thumb_top + 2.0)),
+    );
+    painter.rect_filled(thumb, 4.0, Color32::from_rgb(90, 168, 204));
+}
+
+fn pitch_scroll_center_for_pointer(
+    full_view: crate::app::state::PitchView,
+    visible_view: crate::app::state::PitchView,
+    pointer_t: f64,
+) -> f64 {
+    let total = full_view.pitch_count() as f64;
+    let visible = visible_view.pitch_count() as f64;
+    let maximum_start = total - visible;
+    let minimum_start = full_view.min_midi_note as f64;
+    let start = minimum_start + (1.0 - pointer_t.clamp(0.0, 1.0)) * maximum_start;
+    start + visible / 2.0
+}
+
 pub(crate) fn layer_color(layer_id: u64) -> Color32 {
     const PALETTE: [Color32; 6] = [
         Color32::from_rgb(72, 202, 228),
@@ -885,29 +991,24 @@ pub(crate) fn layer_color(layer_id: u64) -> Color32 {
 
 fn draw_spectrogram_body(
     painter: &egui::Painter,
-    rect: egui::Rect,
+    content_rect: egui::Rect,
     state: &AppState,
     view_start: f64,
     view_end: f64,
     cache: &mut SpectrogramCache,
 ) {
     let Some(track) = &state.track else {
-        draw_placeholder_grid(painter, rect);
+        draw_placeholder_grid(painter, content_rect);
         return;
     };
     let Some(spectrogram) = &track.spectrogram else {
-        draw_placeholder_grid(painter, rect);
+        draw_placeholder_grid(painter, content_rect);
         return;
     };
     if spectrogram.frames == 0 || spectrogram.pitches == 0 {
-        draw_placeholder_grid(painter, rect);
+        draw_placeholder_grid(painter, content_rect);
         return;
     }
-
-    let content_rect = egui::Rect::from_min_max(
-        rect.left_top() + egui::vec2(0.0, 0.0),
-        rect.right_bottom() - egui::vec2(0.0, 40.0),
-    );
 
     let start_frame = ((view_start / spectrogram.frame_duration_seconds).floor() as usize)
         .min(spectrogram.frames.saturating_sub(1));

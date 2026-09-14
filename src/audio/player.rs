@@ -9,6 +9,7 @@ use cpal::{
     SupportedStreamConfig,
 };
 
+use crate::audio::comparison::{ComparisonAudioControl, ComparisonAudioSnapshot};
 use crate::audio::dsp_engine::DspEngine;
 use crate::audio::timestretch::DspTransportEvent;
 use crate::model::{PlaybackDspSettings, Track};
@@ -16,6 +17,7 @@ use crate::model::{PlaybackDspSettings, Track};
 pub struct AudioPlayer {
     runtime: Option<Arc<PlaybackRuntime>>,
     stream: Option<Stream>,
+    comparison_control: Arc<ComparisonAudioControl>,
 }
 
 #[derive(Clone)]
@@ -23,6 +25,7 @@ pub struct PlayerSnapshot {
     pub transport: TransportState,
     pub position_seconds: f64,
     pub transport_generation: u64,
+    pub comparison: ComparisonAudioSnapshot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -81,7 +84,12 @@ impl AudioPlayer {
         Self {
             runtime: None,
             stream: None,
+            comparison_control: Arc::new(ComparisonAudioControl::default()),
         }
+    }
+
+    pub fn comparison_control(&self) -> Arc<ComparisonAudioControl> {
+        Arc::clone(&self.comparison_control)
     }
 
     pub fn load_track(&mut self, track: &Track) -> Result<(), PlayerError> {
@@ -96,7 +104,11 @@ impl AudioPlayer {
             .map_err(PlayerError::SupportedConfigs)?;
         let stream_config = config.config();
 
-        let runtime = Arc::new(PlaybackRuntime::from_track(track, &stream_config));
+        let runtime = Arc::new(PlaybackRuntime::from_track(
+            track,
+            &stream_config,
+            Arc::clone(&self.comparison_control),
+        ));
         let runtime_for_stream = Arc::clone(&runtime);
 
         let stream = match config.sample_format() {
@@ -191,6 +203,7 @@ impl AudioPlayer {
                 transport: TransportState::Stopped,
                 position_seconds: 0.0,
                 transport_generation: 0,
+                comparison: self.comparison_control.snapshot(),
             };
         };
 
@@ -198,7 +211,20 @@ impl AudioPlayer {
             transport: TransportState::from_u8(runtime.transport.load(Ordering::Relaxed)),
             position_seconds: runtime.current_position_seconds(),
             transport_generation: runtime.transport_generation.load(Ordering::Relaxed),
+            comparison: self.comparison_control.snapshot(),
         }
+    }
+
+    pub fn enable_comparison_from_start(&self) {
+        self.comparison_control.enable_from_start();
+    }
+
+    pub fn disable_comparison(&self) {
+        self.comparison_control.disable();
+    }
+
+    pub fn reset_comparison_to_start(&self) {
+        self.comparison_control.reset_to_start_if_enabled();
     }
 
     pub fn set_loop_enabled(&mut self, enabled: bool) {
@@ -258,6 +284,12 @@ impl AudioPlayer {
                 .store(volume.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
         }
     }
+
+    pub fn set_source_muted(&self, muted: bool) {
+        if let Some(runtime) = &self.runtime {
+            runtime.source_muted.store(muted, Ordering::Relaxed);
+        }
+    }
 }
 
 impl Default for AudioPlayer {
@@ -275,10 +307,16 @@ struct PlaybackRuntime {
     loop_end_frames_bits: AtomicU64,
     transport_generation: AtomicU64,
     source_volume_bits: AtomicU32,
+    source_muted: AtomicBool,
+    comparison_control: Arc<ComparisonAudioControl>,
 }
 
 impl PlaybackRuntime {
-    fn from_track(track: &Track, config: &StreamConfig) -> Self {
+    fn from_track(
+        track: &Track,
+        config: &StreamConfig,
+        comparison_control: Arc<ComparisonAudioControl>,
+    ) -> Self {
         Self {
             dsp_engine: DspEngine::new(
                 Arc::from(track.samples.clone()),
@@ -294,6 +332,8 @@ impl PlaybackRuntime {
             loop_end_frames_bits: AtomicU64::new(0.0f64.to_bits()),
             transport_generation: AtomicU64::new(1),
             source_volume_bits: AtomicU32::new(1.0f32.to_bits()),
+            source_muted: AtomicBool::new(false),
+            comparison_control,
         }
     }
 
@@ -401,6 +441,9 @@ where
             position_frames = loop_start;
             runtime.transport_generation.fetch_add(1, Ordering::Relaxed);
             runtime.dsp_engine.reset_stream_to(loop_start);
+            if transport == TransportState::Playing {
+                runtime.comparison_control.advance();
+            }
         }
 
         if transport != TransportState::Playing
@@ -431,6 +474,10 @@ where
             }
             continue;
         }
+        let source_is_audible = runtime
+            .comparison_control
+            .snapshot()
+            .source_is_audible(runtime.source_muted.load(Ordering::Relaxed));
         for (channel, sample) in frame.iter_mut().enumerate() {
             let value = if streamed {
                 streamed_frame[channel]
@@ -439,7 +486,11 @@ where
                     .dsp_engine
                     .render_source_sample(position_frames, channel)
             };
-            *sample = T::from_sample(value * source_volume);
+            *sample = T::from_sample(if source_is_audible {
+                value * source_volume
+            } else {
+                0.0
+            });
         }
 
         position_frames += runtime.step_ratio() * speed_ratio;

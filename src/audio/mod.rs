@@ -1,3 +1,4 @@
+pub mod comparison;
 pub mod decoder;
 pub mod dsp_engine;
 pub mod piano_samples;
