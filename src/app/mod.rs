@@ -71,6 +71,7 @@ impl OtomieruApp {
             return;
         };
 
+        let load_started_at = Instant::now();
         self.state
             .set_status(format!("読み込み中: {}", path.display()));
         self.spectrogram_cache.clear();
@@ -90,6 +91,10 @@ impl OtomieruApp {
                             self.state.status_text.push_str(" | ");
                             self.state.status_text.push_str(&analysis_status);
                         }
+                        self.state.status_text.push_str(&format!(
+                            " | 読み込み時間: {}",
+                            format_load_duration(load_started_at.elapsed())
+                        ));
                         self.playhead_interpolator.reset(0.0);
                         self.last_applied_dsp_settings = None;
                         self.comparison_loop_range = None;
@@ -694,10 +699,15 @@ impl PlayheadInterpolator {
     }
 }
 
+fn format_load_duration(duration: std::time::Duration) -> String {
+    format!("{:.2}秒", duration.as_secs_f64())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        PlayheadInterpolator, UiFrameMonitor, active_memo_tone_requests, should_handle_project_undo,
+        PlayheadInterpolator, UiFrameMonitor, active_memo_tone_requests, format_load_duration,
+        should_handle_project_undo,
     };
     use crate::model::ProjectState;
     use std::time::{Duration, Instant};
@@ -797,5 +807,10 @@ mod tests {
     fn project_undo_defers_to_focused_text_input() {
         assert!(!should_handle_project_undo(true));
         assert!(should_handle_project_undo(false));
+    }
+
+    #[test]
+    fn load_duration_is_displayed_in_seconds() {
+        assert_eq!(format_load_duration(Duration::from_millis(1_234)), "1.23秒");
     }
 }
