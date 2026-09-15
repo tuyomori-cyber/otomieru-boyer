@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::app::input::MouseInputSettings;
 use crate::audio::preview_tone::PreviewTimbre;
 use crate::model::{PlaybackState, ProjectState, Selection, Track};
 
@@ -75,7 +76,10 @@ pub struct AppState {
     /// 元音源だけを一時的に無音化する。音量設定値は維持する。
     pub source_audio_muted: bool,
     pub preview_timbre: PreviewTimbre,
-    pub settings_popup_open: bool,
+    pub mouse_input: MouseInputSettings,
+    pub analysis_tools_popup_open: bool,
+    pub mouse_settings_popup_open: bool,
+    pub help_popup_open: bool,
 }
 
 impl AppState {
@@ -182,6 +186,13 @@ impl AppState {
 
     pub fn reset_view_to_start(&mut self) {
         self.view_start_seconds = 0.0;
+    }
+
+    pub fn reset_visualization_view(&mut self) {
+        self.view_start_seconds = 0.0;
+        self.view_zoom = 1.0;
+        self.pitch_view_center_midi = pitch_midpoint(&self.track);
+        self.pitch_zoom = 1.0;
     }
 
     pub fn zoom_view_at(&mut self, anchor_seconds: f64, factor: f64) {
@@ -313,7 +324,10 @@ impl Default for AppState {
             source_audio_volume: 1.0,
             source_audio_muted: false,
             preview_timbre: PreviewTimbre::Piano,
-            settings_popup_open: false,
+            mouse_input: MouseInputSettings::default(),
+            analysis_tools_popup_open: false,
+            mouse_settings_popup_open: false,
+            help_popup_open: false,
         }
     }
 }

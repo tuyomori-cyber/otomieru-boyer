@@ -1,3 +1,4 @@
+pub mod input;
 pub mod state;
 
 use eframe::egui;
@@ -10,7 +11,8 @@ use crate::audio::player::{AudioPlayer, PlayerSnapshot, TransportState, UI_REPAI
 use crate::audio::preview_tone::{MemoToneRequest, PreviewTonePlayer, PreviewToneRequest};
 use crate::model::{PlaybackDspSettings, ProjectData, ProjectState};
 use crate::persistence::{
-    AudioIdentity, AudioMismatch, LoadOutcome, load_sidecar, save_sidecar, sidecar_path,
+    AppSettings, AudioIdentity, AudioMismatch, LoadOutcome, load_app_settings, load_sidecar,
+    save_app_settings, save_sidecar, sidecar_path,
 };
 use crate::ui::{piano, spectrogram, timeline, toolbar};
 
@@ -34,8 +36,20 @@ impl OtomieruApp {
         configure_japanese_fonts(&cc.egui_ctx);
         let player = AudioPlayer::default();
         let comparison_control = player.comparison_control();
+        let mut state = AppState::default();
+        match load_app_settings() {
+            Ok(Some(mut settings)) => {
+                let migrated = settings.mouse_input.normalize_for_platform();
+                if migrated && let Err(error) = save_app_settings(&settings) {
+                    state.set_status(format!("操作設定を保存できませんでした: {error}"));
+                }
+                state.mouse_input = settings.mouse_input;
+            }
+            Ok(None) => {}
+            Err(error) => state.set_status(format!("操作設定を読み込めませんでした: {error}")),
+        }
         Self {
-            state: AppState::default(),
+            state,
             player,
             preview_tone_player: PreviewTonePlayer::new(comparison_control).ok(),
             last_applied_dsp_settings: None,
@@ -310,13 +324,23 @@ impl eframe::App for OtomieruApp {
             ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S));
         let undo_pressed = consume_project_undo_shortcut(ctx);
         let actions = toolbar::show(ctx, &mut self.state);
+        if actions.mouse_input_changed {
+            let settings = AppSettings {
+                mouse_input: self.state.mouse_input.clone(),
+                ..AppSettings::default()
+            };
+            if let Err(error) = save_app_settings(&settings) {
+                self.state
+                    .set_status(format!("操作設定を保存できませんでした: {error}"));
+            }
+        }
         if actions.open_requested {
             self.open_audio_file();
         }
         if actions.save_requested || (save_pressed && self.state.track.is_some()) {
             self.save_project_sidecar();
         }
-        if undo_pressed && self.state.project.undo() {
+        if (undo_pressed || actions.undo_requested) && self.state.project.undo() {
             self.state
                 .set_status("直前の音高メモ編集を取り消しました。");
         }
@@ -324,6 +348,10 @@ impl eframe::App for OtomieruApp {
             self.state.selection.clear();
             self.state
                 .set_status("ループ範囲を消去しました。曲先頭へは |< を使います。");
+        }
+        if actions.reset_visualization_requested {
+            self.state.reset_visualization_view();
+            ctx.request_repaint();
         }
         if let Some(enabled) = actions.comparison_enabled_changed {
             self.set_comparison_enabled(enabled);
@@ -407,17 +435,23 @@ impl eframe::App for OtomieruApp {
                     }
                     if let Some(view_start_seconds) = spectrogram_actions.view_start_seconds {
                         self.state.set_view_start_seconds(view_start_seconds);
+                        // 表示範囲の更新はスペクトログラム描画の後に適用されるため、
+                        // 停止中でも次フレームを明示的に要求する。
+                        ctx.request_repaint();
                     }
                     if let Some(pitch_view_center_midi) = spectrogram_actions.pitch_view_center_midi
                     {
                         self.state
                             .set_pitch_view_center_midi(pitch_view_center_midi);
+                        ctx.request_repaint();
                     }
                     if let Some((anchor_seconds, factor)) = spectrogram_actions.zoom_at {
                         self.state.zoom_view_at(anchor_seconds, factor);
+                        ctx.request_repaint();
                     }
                     if let Some((anchor_midi, factor)) = spectrogram_actions.pitch_zoom_at {
                         self.state.zoom_pitch_at(anchor_midi, factor);
+                        ctx.request_repaint();
                     }
                     if let Some(midi_note) = spectrogram_actions.preview_midi_note {
                         let preview_changed = self.state.preview_midi_note != Some(midi_note);

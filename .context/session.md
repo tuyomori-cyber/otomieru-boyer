@@ -1,13 +1,13 @@
 # Current State
 
-Updated: 1789368305
+Updated: 1789460370
 
 Now:
-- Done: 実装・テスト・仕様・README・変更履歴・ToDoの記述を整合。
-- Pending: Notes時ノイズの切り分け。
+- Done: v0.5.0の実機テスト完了を反映し、全体仕様書、README、変更履歴、テスト項目を現行UIへ同期した。
 
 Next:
-- Notes時ノイズを、フェーズ切替時とメモ発音開始時に分けて調査。
+- Notes時ノイズを、比較フェーズ切替時とメモ発音開始時に分けて切り分ける。
+- v0.6.0のループシーケンサー仕様を実装単位へ分解する。
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.

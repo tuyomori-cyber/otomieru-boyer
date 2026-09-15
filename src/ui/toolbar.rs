@@ -1,5 +1,8 @@
 use eframe::egui;
 
+use crate::app::input::{
+    MouseInputSettings, MousePreset, VariableMemoModifier, WheelAction, WheelModifier,
+};
 use crate::app::state::{AppState, PITCH_CLASS_NAMES};
 use crate::audio::preview_tone::PreviewTimbre;
 use crate::model::{EQ_BAND_COUNT, EQ_BAND_FREQUENCIES_HZ, ScalePreset};
@@ -9,11 +12,14 @@ use crate::ui::spectrogram::layer_color;
 pub struct ToolbarActions {
     pub open_requested: bool,
     pub save_requested: bool,
+    pub undo_requested: bool,
     pub play_pause_requested: bool,
     pub seek_to_start_requested: bool,
     pub stop_requested: bool,
     pub clear_loop_range_requested: bool,
     pub comparison_enabled_changed: Option<bool>,
+    pub mouse_input_changed: bool,
+    pub reset_visualization_requested: bool,
 }
 
 pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
@@ -22,21 +28,105 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
     egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
         ui.add_space(4.0);
 
+        ui.horizontal(|ui| {
+            ui.menu_button("ファイル", |ui| {
+                if ui.button("音源を開く…").clicked() {
+                    actions.open_requested = true;
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        state.track.is_some() && state.project.editing.dirty,
+                        egui::Button::new("保存").shortcut_text("Ctrl+S"),
+                    )
+                    .clicked()
+                {
+                    actions.save_requested = true;
+                    ui.close();
+                }
+            });
+            ui.menu_button("編集", |ui| {
+                if ui
+                    .add_enabled(
+                        state.project.can_undo(),
+                        egui::Button::new("元に戻す").shortcut_text("Ctrl+Z"),
+                    )
+                    .clicked()
+                {
+                    actions.undo_requested = true;
+                    ui.close();
+                }
+            });
+            ui.menu_button("再生", |ui| {
+                let play_label = if state.playback.playing {
+                    "一時停止"
+                } else {
+                    "再生"
+                };
+                if ui
+                    .add_enabled(state.track.is_some(), egui::Button::new(play_label))
+                    .clicked()
+                {
+                    actions.play_pause_requested = true;
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(state.track.is_some(), egui::Button::new("先頭へ戻る"))
+                    .clicked()
+                {
+                    actions.seek_to_start_requested = true;
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(state.track.is_some(), egui::Button::new("停止"))
+                    .clicked()
+                {
+                    actions.stop_requested = true;
+                    ui.close();
+                }
+            });
+            ui.menu_button("表示", |ui| {
+                if ui.button("時間・音高表示を初期化").clicked() {
+                    actions.reset_visualization_requested = true;
+                    ui.close();
+                }
+            });
+            ui.menu_button("分析ツール", |ui| {
+                if ui.button("分析ツールを開く…").clicked() {
+                    state.analysis_tools_popup_open = true;
+                    ui.close();
+                }
+            });
+            ui.menu_button("設定", |ui| {
+                if ui.button("マウス操作…").clicked() {
+                    state.mouse_settings_popup_open = true;
+                    ui.close();
+                }
+            });
+            ui.menu_button("ヘルプ", |ui| {
+                if ui.button("操作ガイド").clicked() {
+                    state.help_popup_open = true;
+                    ui.close();
+                }
+            });
+
+            let duration = state
+                .track
+                .as_ref()
+                .map(|track| track.duration_seconds)
+                .unwrap_or(0.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.monospace(format!(
+                    "{} / {}",
+                    format_mm_ss(state.display_playhead_position_seconds),
+                    format_mm_ss(duration)
+                ));
+            });
+        });
+        ui.separator();
+
         ui.horizontal_wrapped(|ui| {
             let dsp_controls_enabled = state.track.is_some() && !state.playback.playing;
-
-            if ui.button("Open").clicked() {
-                actions.open_requested = true;
-            }
-            if ui
-                .add_enabled(
-                    state.track.is_some() && state.project.editing.dirty,
-                    egui::Button::new("Save"),
-                )
-                .clicked()
-            {
-                actions.save_requested = true;
-            }
 
             let play_label = if state.playback.playing {
                 "Pause"
@@ -128,27 +218,26 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
             if comparison_available && let Some(phase) = state.playback.comparison_phase() {
                 ui.label(format!("比較: {}", phase.label()));
             }
+        });
 
-            ui.separator();
-
+        ui.horizontal_wrapped(|ui| {
             ui.label("Heat");
-            ui.add(
+            ui.add_sized(
+                [110.0, ui.spacing().interact_size.y],
                 egui::Slider::new(&mut state.spectrogram_gain_db, -24.0..=24.0)
                     .suffix(" dB")
                     .step_by(1.0),
             );
 
-            if ui.button("調整・設定").clicked() {
-                state.settings_popup_open = true;
-            }
-
-            ui.add(
+            ui.add_sized(
+                [110.0, ui.spacing().interact_size.y],
                 egui::Slider::new(&mut state.preview_tone_amplitude, 0.0..=0.5)
                     .text("試聴音量")
                     .suffix("")
                     .custom_formatter(|amplitude, _| format!("{:.0}%", amplitude * 100.0)),
             );
-            ui.add(
+            ui.add_sized(
+                [110.0, ui.spacing().interact_size.y],
                 egui::Slider::new(&mut state.source_audio_volume, 0.0..=1.0)
                     .text("原曲音量")
                     .suffix("")
@@ -162,34 +251,63 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
             })
             .response
             .on_disabled_hover_text("比較中の原曲MuteはOriginal / Notes / Mixが自動制御します。");
-
-            ui.separator();
-
-            let duration = state
-                .track
-                .as_ref()
-                .map(|track| track.duration_seconds)
-                .unwrap_or(0.0);
-
-            ui.monospace(format!(
-                "{} / {}",
-                format_mm_ss(state.display_playhead_position_seconds),
-                format_mm_ss(duration)
-            ));
         });
 
         ui.add_space(4.0);
     });
 
-    show_settings_dialog(ctx, state);
+    show_analysis_tools_dialog(ctx, state);
+    actions.mouse_input_changed = show_mouse_settings_dialog(ctx, state);
+    show_help_dialog(ctx, state);
 
     actions
 }
 
-fn show_settings_dialog(ctx: &egui::Context, state: &mut AppState) {
-    let mut settings_popup_open = state.settings_popup_open;
-    egui::Window::new("調整・設定")
-        .open(&mut settings_popup_open)
+fn show_help_dialog(ctx: &egui::Context, state: &mut AppState) {
+    let mut help_popup_open = state.help_popup_open;
+    egui::Window::new("操作ガイド")
+        .open(&mut help_popup_open)
+        .resizable(true)
+        .default_width(440.0)
+        .show(ctx, |ui| {
+            ui.heading("耳コピの基本操作");
+            ui.label("Space: 再生／一時停止　　Ctrl+S: 保存　　Ctrl+Z: 元に戻す");
+            ui.separator();
+            ui.strong("再生と比較");
+            ui.label("上部ツールバーで再生速度・ピッチ・Loop・比較を操作します。");
+            ui.label("タイムラインをドラッグしてループ範囲を作成・調整します。");
+            ui.separator();
+            ui.strong("音高メモ");
+            if let Some(memo_modifier) = state.mouse_input.variable_memo_modifier {
+                ui.label(format!(
+                    "左ダブルクリック: 0.5秒メモを追加　　{}+左ドラッグ: 可変長メモを追加",
+                    memo_modifier.label()
+                ));
+            } else {
+                ui.label("左ダブルクリック: 0.5秒メモを追加　　可変長設置: 無効（設定から変更）");
+            }
+            ui.label("右クリックでメモを削除します。再生中は有効なLoop範囲内で編集できます。");
+            ui.separator();
+            ui.strong("表示移動");
+            ui.label(format!(
+                "時間ズーム: {} + ホイール　　音高ズーム: {} + ホイール　　時間移動: {} + ホイール",
+                state.mouse_input.time_zoom_modifier.label(),
+                state.mouse_input.pitch_zoom_modifier.label(),
+                state.mouse_input.time_pan_modifier.label(),
+            ));
+            ui.label(
+                "下部バーのドラッグでも時間表示を、右側バーのドラッグでも音高表示を移動できます。",
+            );
+            ui.separator();
+            ui.small("分析用の調整は分析ツールから、マウス操作は設定から変更できます。");
+        });
+    state.help_popup_open = help_popup_open;
+}
+
+fn show_analysis_tools_dialog(ctx: &egui::Context, state: &mut AppState) {
+    let mut analysis_tools_popup_open = state.analysis_tools_popup_open;
+    egui::Window::new("分析ツール")
+        .open(&mut analysis_tools_popup_open)
         .resizable(true)
         .scroll([true, true])
         .default_width(360.0)
@@ -251,7 +369,23 @@ fn show_settings_dialog(ctx: &egui::Context, state: &mut AppState) {
                 |ui| show_layer_settings(ui, state),
             );
         });
-    state.settings_popup_open = settings_popup_open;
+    state.analysis_tools_popup_open = analysis_tools_popup_open;
+}
+
+fn show_mouse_settings_dialog(ctx: &egui::Context, state: &mut AppState) -> bool {
+    let mut mouse_settings_popup_open = state.mouse_settings_popup_open;
+    let mut mouse_input_changed = false;
+    egui::Window::new("マウス操作設定")
+        .open(&mut mouse_settings_popup_open)
+        .resizable(true)
+        .default_width(360.0)
+        .show(ctx, |ui| {
+            ui.label("ホイール操作と可変長メモ設置の修飾キーを設定します。");
+            ui.separator();
+            mouse_input_changed |= show_mouse_input_settings(ui, &mut state.mouse_input);
+        });
+    state.mouse_settings_popup_open = mouse_settings_popup_open;
+    mouse_input_changed
 }
 
 fn show_settings_section(
@@ -372,6 +506,88 @@ fn show_timbre_settings(ui: &mut egui::Ui, state: &mut AppState) {
     for timbre in PreviewTimbre::ALL {
         ui.radio_value(&mut state.preview_timbre, timbre, timbre.label());
     }
+}
+
+fn show_mouse_input_settings(ui: &mut egui::Ui, settings: &mut MouseInputSettings) -> bool {
+    let mut changed = false;
+    let preset_label = settings
+        .preset()
+        .map(MousePreset::label)
+        .unwrap_or("カスタム");
+    egui::ComboBox::from_label("操作プリセット")
+        .selected_text(preset_label)
+        .show_ui(ui, |ui| {
+            for preset in MousePreset::ALL {
+                if ui
+                    .selectable_label(settings.preset() == Some(preset), preset.label())
+                    .clicked()
+                {
+                    *settings = MouseInputSettings::for_preset(preset);
+                    changed = true;
+                }
+            }
+        });
+    ui.small("個別に変更すると表示は「カスタム」になります。");
+
+    ui.add_space(4.0);
+    ui.strong("ホイール操作");
+    changed |= show_wheel_modifier_selector(ui, settings, WheelAction::TimeZoom, "時間ズーム");
+    changed |= show_wheel_modifier_selector(ui, settings, WheelAction::PitchZoom, "音高ズーム");
+    changed |= show_wheel_modifier_selector(ui, settings, WheelAction::TimePan, "時間移動");
+
+    ui.add_space(4.0);
+    ui.strong("可変長メモ設置");
+    egui::ComboBox::from_label("左ドラッグの修飾キー")
+        .selected_text(
+            settings
+                .variable_memo_modifier
+                .map(VariableMemoModifier::label)
+                .unwrap_or("無効"),
+        )
+        .show_ui(ui, |ui| {
+            changed |= ui
+                .selectable_value(&mut settings.variable_memo_modifier, None, "無効")
+                .changed();
+            for modifier in VariableMemoModifier::ALL {
+                changed |= ui
+                    .selectable_value(
+                        &mut settings.variable_memo_modifier,
+                        Some(modifier),
+                        modifier.label(),
+                    )
+                    .changed();
+            }
+        });
+    ui.small("修飾キーを押しながらスペクトログラムを左ドラッグすると可変長メモを作成します。");
+
+    changed
+}
+
+fn show_wheel_modifier_selector(
+    ui: &mut egui::Ui,
+    settings: &mut MouseInputSettings,
+    action: WheelAction,
+    label: &str,
+) -> bool {
+    let current = match action {
+        WheelAction::TimeZoom => settings.time_zoom_modifier,
+        WheelAction::PitchZoom => settings.pitch_zoom_modifier,
+        WheelAction::TimePan => settings.time_pan_modifier,
+    };
+    let mut changed = false;
+    egui::ComboBox::from_label(label)
+        .selected_text(current.label())
+        .show_ui(ui, |ui| {
+            for modifier in WheelModifier::ALL {
+                if ui
+                    .selectable_label(modifier == current, modifier.label())
+                    .clicked()
+                {
+                    changed |= settings.set_wheel_modifier(action, modifier);
+                }
+            }
+        });
+    changed
 }
 
 fn show_layer_settings(ui: &mut egui::Ui, state: &mut AppState) {

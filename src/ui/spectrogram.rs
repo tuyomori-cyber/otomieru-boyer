@@ -1,5 +1,6 @@
 use eframe::egui::{self, Align2, Color32, FontId, Sense, Stroke, TextureHandle, Vec2};
 
+use crate::app::input::WheelAction;
 use crate::app::state::AppState;
 use crate::model::{
     DEFAULT_MEMO_DURATION_SECONDS, EqualizerSettings, PitchMemoLayer, SelectedMemo,
@@ -7,10 +8,12 @@ use crate::model::{
 
 const MEMO_HANDLE_HIT_RADIUS: f32 = 7.0;
 const MIN_MEMO_DURATION_SECONDS: f64 = 0.01;
+const TIME_PAN_VIEW_FRACTION: f64 = 0.15;
 const MEMO_EDIT_DRAG_ID: &str = "pitch-memo-edit-drag";
+const MEMO_CREATE_DRAG_ID: &str = "pitch-memo-create-drag";
+const VIEW_SCROLLBAR_DRAG_ID: &str = "view-scrollbar-drag";
 const PITCH_SCROLLBAR_WIDTH: f32 = 10.0;
 const PITCH_SCROLLBAR_MARGIN: f32 = 6.0;
-const PITCH_SCROLLBAR_DRAG_ID: &str = "pitch-scrollbar-drag";
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SpectrogramActions {
@@ -71,6 +74,12 @@ enum MemoHoverCursor {
 }
 
 #[derive(Debug, Clone, Copy)]
+enum ViewScrollbarDrag {
+    Time { thumb_offset_ratio: f64 },
+    Pitch { thumb_offset_ratio: f64 },
+}
+
+#[derive(Debug, Clone, Copy)]
 struct MemoResizeDrag {
     selected: SelectedMemo,
     edge: MemoEdge,
@@ -89,6 +98,22 @@ struct MemoMoveDrag {
     pitch_offset_midi: i32,
     proposed_start_sec: f64,
     proposed_pitch_midi: i32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MemoCreateDrag {
+    layer_id: crate::model::LayerId,
+    pressed_sec: f64,
+    proposed_end_sec: f64,
+    pitch_midi: i32,
+}
+
+impl MemoCreateDrag {
+    fn proposed_bounds(self, audio_duration: f64) -> (f64, f64, i32) {
+        let (start_sec, duration_sec) =
+            created_memo_bounds(self.pressed_sec, self.proposed_end_sec, audio_duration);
+        (start_sec, duration_sec, self.pitch_midi)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -164,22 +189,8 @@ pub fn show(
         ),
         egui::pos2(rect.right() - PITCH_SCROLLBAR_MARGIN, content_rect.bottom()),
     );
-    let pitch_scrollbar_drag_id = ui.id().with(PITCH_SCROLLBAR_DRAG_ID);
-    let mut pitch_scrollbar_dragging = ui
-        .ctx()
-        .data(|data| data.get_temp::<bool>(pitch_scrollbar_drag_id))
-        .unwrap_or(false);
-    if response.drag_started_by(egui::PointerButton::Primary)
-        && let Some(pointer_pos) = ui.input(|input| input.pointer.press_origin())
-        && pitch_scrollbar_rect.contains(pointer_pos)
-    {
-        pitch_scrollbar_dragging = true;
-        ui.ctx()
-            .data_mut(|data| data.insert_temp(pitch_scrollbar_drag_id, true));
-    }
-
     draw_spectrogram_body(&painter, content_rect, state, view_start, view_end, cache);
-    let memo_edit_drag =
+    let (memo_edit_drag, memo_create_drag) =
         handle_pitch_memo_interaction(ui, &response, state, content_rect, view_start, view_end);
     let memo_hover_cursor = state
         .can_edit_pitch_memos()
@@ -203,6 +214,16 @@ pub fn show(
         view_end,
         memo_edit_drag.as_ref(),
     );
+    if let Some(create_drag) = memo_create_drag {
+        draw_memo_creation_preview(
+            &painter,
+            content_rect,
+            state,
+            view_start,
+            view_end,
+            create_drag,
+        );
+    }
     if let Some(MemoHoverCursor::Move(position)) = memo_hover_cursor {
         draw_memo_move_cursor(&painter, position);
     }
@@ -290,19 +311,6 @@ pub fn show(
         playhead_bar_x,
     );
 
-    let overlay = if state.playback.playing {
-        "下部バーで表示範囲を移動 / 縦線は表示中のみ追従"
-    } else {
-        "下部バーで表示範囲を移動"
-    };
-    let memo_controls = if !state.playback.playing {
-        "音高メモ: 左ダブルクリックで追加 / 右クリックで削除 / 左右端を右ドラッグでリサイズ"
-    } else if state.can_edit_pitch_memos() {
-        "Loop再生中: 音高メモを編集可能（右ドラッグ中はズーム禁止）"
-    } else {
-        "音高メモ編集は停止中またはLoop再生中のみ"
-    };
-
     painter.text(
         rect.left_top() + egui::vec2(16.0, 16.0),
         Align2::LEFT_TOP,
@@ -315,12 +323,10 @@ pub fn show(
         rect.left_top() + egui::vec2(16.0, 42.0),
         Align2::LEFT_TOP,
         format!(
-            "View | {:.2} - {:.2} sec | {:.1}x\n{}\n{}\nUI: {:.1} FPS | {:.1} ms | Scale: {:.2}",
+            "View | {:.2} - {:.2} sec | {:.1}x\nUI: {:.1} FPS | {:.1} ms | Scale: {:.2}",
             view_start,
             view_end,
             state.view_zoom,
-            overlay,
-            memo_controls,
             state.ui_frame_metrics.frames_per_second,
             state.ui_frame_metrics.frame_time_ms,
             state.ui_frame_metrics.pixels_per_point,
@@ -344,62 +350,128 @@ pub fn show(
         Color32::from_rgb(165, 188, 204),
     );
 
-    if pitch_scrollbar_dragging {
-        if let Some(pointer_pos) = response.interact_pointer_pos() {
-            let pointer_t = ((pointer_pos.y - pitch_scrollbar_rect.top())
-                / pitch_scrollbar_rect.height())
-            .clamp(0.0, 1.0) as f64;
-            actions.pitch_view_center_midi = Some(pitch_scroll_center_for_pointer(
-                state.full_pitch_view(),
-                state.pitch_view(),
-                pointer_t,
-            ));
+    let scrollbar_drag_id = ui.id().with(VIEW_SCROLLBAR_DRAG_ID);
+    if response.drag_started_by(egui::PointerButton::Primary)
+        && let Some(pressed_pos) = ui.input(|input| input.pointer.press_origin())
+    {
+        let drag = if page_bar_rect.contains(pressed_pos) {
+            let thumb_offset_ratio = if current_view_rect.contains(pressed_pos) {
+                ((pressed_pos.x - current_view_rect.left()) / current_view_rect.width())
+                    .clamp(0.0, 1.0) as f64
+            } else {
+                0.5
+            };
+            Some(ViewScrollbarDrag::Time { thumb_offset_ratio })
+        } else if pitch_scrollbar_rect.contains(pressed_pos) {
+            let pitch_thumb_rect = pitch_scrollbar_thumb_rect(pitch_scrollbar_rect, state);
+            let thumb_offset_ratio = if pitch_thumb_rect.contains(pressed_pos) {
+                ((pressed_pos.y - pitch_thumb_rect.top()) / pitch_thumb_rect.height())
+                    .clamp(0.0, 1.0) as f64
+            } else {
+                0.5
+            };
+            Some(ViewScrollbarDrag::Pitch { thumb_offset_ratio })
+        } else {
+            None
+        };
+        if let Some(drag) = drag {
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(scrollbar_drag_id, drag));
         }
-    } else if let Some(pointer_pos) = response.hover_pos() {
-        if pitch_scrollbar_rect.contains(pointer_pos) {
-            let pointer_down = ui.input(|input| input.pointer.primary_down());
-            if response.clicked() || pointer_down {
+    }
+
+    let scrollbar_drag = ui
+        .ctx()
+        .data(|data| data.get_temp::<ViewScrollbarDrag>(scrollbar_drag_id));
+    if let Some(drag) = scrollbar_drag
+        && let Some(pointer_pos) = response.interact_pointer_pos()
+    {
+        match drag {
+            ViewScrollbarDrag::Time { thumb_offset_ratio } => {
+                let pointer_t = ((pointer_pos.x - page_bar_rect.left()) / page_bar_rect.width())
+                    .clamp(0.0, 1.0) as f64;
+                actions.view_start_seconds = Some(time_view_start_for_thumb_position(
+                    duration,
+                    view_duration,
+                    pointer_t,
+                    thumb_offset_ratio,
+                ));
+            }
+            ViewScrollbarDrag::Pitch { thumb_offset_ratio } => {
                 let pointer_t = ((pointer_pos.y - pitch_scrollbar_rect.top())
                     / pitch_scrollbar_rect.height())
                 .clamp(0.0, 1.0) as f64;
-                actions.pitch_view_center_midi = Some(pitch_scroll_center_for_pointer(
+                actions.pitch_view_center_midi = Some(pitch_scroll_center_for_thumb_position(
                     state.full_pitch_view(),
                     state.pitch_view(),
                     pointer_t,
+                    thumb_offset_ratio,
+                ));
+            }
+        }
+    } else if let Some(pointer_pos) = response.hover_pos() {
+        if pitch_scrollbar_rect.contains(pointer_pos) {
+            if response.clicked() {
+                let pointer_t = ((pointer_pos.y - pitch_scrollbar_rect.top())
+                    / pitch_scrollbar_rect.height())
+                .clamp(0.0, 1.0) as f64;
+                actions.pitch_view_center_midi = Some(pitch_scroll_center_for_thumb_position(
+                    state.full_pitch_view(),
+                    state.pitch_view(),
+                    pointer_t,
+                    0.5,
                 ));
             }
         } else if page_bar_rect.contains(pointer_pos) {
-            let pointer_down = ui.input(|input| input.pointer.primary_down());
-            if response.clicked() || pointer_down {
+            if response.clicked() {
                 let t = ((pointer_pos.x - page_bar_rect.left()) / page_bar_rect.width())
                     .clamp(0.0, 1.0) as f64;
-                let max_view_start = (duration - view_duration).max(0.0);
-                actions.view_start_seconds = Some(max_view_start * t);
+                actions.view_start_seconds = Some(time_view_start_for_thumb_position(
+                    duration,
+                    view_duration,
+                    t,
+                    0.5,
+                ));
             }
         } else if content_rect.contains(pointer_pos) {
-            let (scroll_delta, ctrl_pressed) =
-                ui.input(|input| (input.raw_scroll_delta.y, input.modifiers.ctrl));
-            if scroll_delta.abs() > f32::EPSILON && memo_edit_drag.is_none() {
-                let factor = if scroll_delta > 0.0 { 1.25 } else { 0.8 };
-                if ctrl_pressed {
-                    let pitch_view = state.pitch_view();
-                    let pointer_t = ((content_rect.bottom() - pointer_pos.y)
-                        / content_rect.height())
-                    .clamp(0.0, 1.0) as f64;
-                    actions.pitch_zoom_at = Some((
-                        pitch_view.min_midi_note as f64
-                            + pointer_t * pitch_view.pitch_count() as f64,
-                        factor,
-                    ));
-                } else {
-                    let pointer_t = ((pointer_pos.x - content_rect.left()) / content_rect.width())
+            let (raw_scroll_delta, modifiers) =
+                ui.input(|input| (input.raw_scroll_delta, input.modifiers));
+            let scroll_delta = scroll_delta_for_modifiers(raw_scroll_delta, modifiers);
+            if scroll_delta.abs() > f32::EPSILON
+                && memo_edit_drag.is_none()
+                && let Some(action) = state.mouse_input.wheel_action(modifiers)
+            {
+                match action {
+                    WheelAction::TimePan => {
+                        actions.view_start_seconds = Some(
+                            view_start + time_pan_delta_for_scroll(scroll_delta, view_duration),
+                        );
+                    }
+                    WheelAction::PitchZoom => {
+                        let factor = if scroll_delta > 0.0 { 1.25 } else { 0.8 };
+                        let pitch_view = state.pitch_view();
+                        let pointer_t = ((content_rect.bottom() - pointer_pos.y)
+                            / content_rect.height())
                         .clamp(0.0, 1.0) as f64;
-                    actions.zoom_at = Some((view_start + view_duration * pointer_t, factor));
+                        actions.pitch_zoom_at = Some((
+                            pitch_view.min_midi_note as f64
+                                + pointer_t * pitch_view.pitch_count() as f64,
+                            factor,
+                        ));
+                    }
+                    WheelAction::TimeZoom => {
+                        let factor = if scroll_delta > 0.0 { 1.25 } else { 0.8 };
+                        let pointer_t = ((pointer_pos.x - content_rect.left())
+                            / content_rect.width())
+                        .clamp(0.0, 1.0) as f64;
+                        actions.zoom_at = Some((view_start + view_duration * pointer_t, factor));
+                    }
                 }
             }
             if !state.playback.playing
                 && response.clicked()
                 && !response.double_clicked_by(egui::PointerButton::Primary)
+                && !state.mouse_input.variable_memo_modifier_matches(modifiers)
             {
                 let t = ((pointer_pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;
                 actions.seek_seconds = Some(view_start + view_duration * t);
@@ -407,6 +479,8 @@ pub fn show(
 
             let pointer_down = ui.input(|input| input.pointer.primary_down());
             if pointer_down
+                && !state.mouse_input.variable_memo_modifier_matches(modifiers)
+                && memo_create_drag.is_none()
                 && let Some(track) = &state.track
                 && track.spectrogram.is_some()
             {
@@ -426,7 +500,7 @@ pub fn show(
 
     if response.drag_stopped_by(egui::PointerButton::Primary) {
         ui.ctx()
-            .data_mut(|data| data.remove::<bool>(pitch_scrollbar_drag_id));
+            .data_mut(|data| data.remove::<ViewScrollbarDrag>(scrollbar_drag_id));
     }
 
     actions
@@ -439,17 +513,22 @@ fn handle_pitch_memo_interaction(
     content_rect: egui::Rect,
     view_start: f64,
     view_end: f64,
-) -> Option<MemoEditDrag> {
+) -> (Option<MemoEditDrag>, Option<MemoCreateDrag>) {
     let audio_duration = state
         .track
         .as_ref()
         .map(|track| track.duration_seconds)
         .unwrap_or(0.0);
     if audio_duration <= 0.0 || !state.can_edit_pitch_memos() {
-        return None;
+        return (None, None);
     }
 
     if response.double_clicked_by(egui::PointerButton::Primary)
+        && !ui.input(|input| {
+            state
+                .mouse_input
+                .variable_memo_modifier_matches(input.modifiers)
+        })
         && let Some(pointer_pos) = response.interact_pointer_pos()
         && content_rect.contains(pointer_pos)
         && let Some(layer_id) = state.project.editing.selected_layer_id
@@ -461,6 +540,57 @@ fn handle_pitch_memo_interaction(
         state
             .project
             .add_memo(layer_id, start_sec, duration_sec, pitch_midi);
+    }
+
+    let create_drag_id = ui.id().with(MEMO_CREATE_DRAG_ID);
+    if response.drag_started_by(egui::PointerButton::Primary)
+        && ui.input(|input| {
+            state
+                .mouse_input
+                .variable_memo_modifier_matches(input.modifiers)
+        })
+        && let Some(pressed_pos) = ui.input(|input| input.pointer.press_origin())
+        && content_rect.contains(pressed_pos)
+        && let Some(layer_id) = state.project.editing.selected_layer_id
+    {
+        let pressed_sec = x_to_time(pressed_pos.x, view_start, view_end, content_rect);
+        let drag = MemoCreateDrag {
+            layer_id,
+            pressed_sec,
+            proposed_end_sec: pressed_sec,
+            pitch_midi: y_to_pitch(pressed_pos.y, state, content_rect),
+        };
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(create_drag_id, drag));
+    }
+
+    if response.dragged_by(egui::PointerButton::Primary)
+        && let Some(pointer_pos) = response.interact_pointer_pos()
+        && let Some(mut drag) = ui
+            .ctx()
+            .data(|data| data.get_temp::<MemoCreateDrag>(create_drag_id))
+    {
+        drag.proposed_end_sec = x_to_time(pointer_pos.x, view_start, view_end, content_rect);
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(create_drag_id, drag));
+    }
+
+    let stopped_create_drag = response
+        .drag_stopped_by(egui::PointerButton::Primary)
+        .then(|| {
+            let drag = ui
+                .ctx()
+                .data(|data| data.get_temp::<MemoCreateDrag>(create_drag_id));
+            ui.ctx()
+                .data_mut(|data| data.remove::<MemoCreateDrag>(create_drag_id));
+            drag
+        })
+        .flatten();
+    if let Some(drag) = stopped_create_drag {
+        let (start_sec, duration_sec, pitch_midi) = drag.proposed_bounds(audio_duration);
+        state
+            .project
+            .add_memo(drag.layer_id, start_sec, duration_sec, pitch_midi);
     }
 
     let drag_id = ui.id().with(MEMO_EDIT_DRAG_ID);
@@ -547,7 +677,11 @@ fn handle_pitch_memo_interaction(
         state.project.delete_memo(hit.selected);
     }
 
-    ui.ctx().data(|data| data.get_temp::<MemoEditDrag>(drag_id))
+    (
+        ui.ctx().data(|data| data.get_temp::<MemoEditDrag>(drag_id)),
+        ui.ctx()
+            .data(|data| data.get_temp::<MemoCreateDrag>(create_drag_id)),
+    )
 }
 
 fn memo_hover_cursor(
@@ -660,6 +794,56 @@ fn draw_pitch_memos(
             edit_drag,
         );
     }
+}
+
+fn draw_memo_creation_preview(
+    painter: &egui::Painter,
+    content_rect: egui::Rect,
+    state: &AppState,
+    view_start: f64,
+    view_end: f64,
+    create_drag: MemoCreateDrag,
+) {
+    let Some(layer) = state
+        .project
+        .data
+        .layers
+        .iter()
+        .find(|layer| layer.id == create_drag.layer_id && layer.visible)
+    else {
+        return;
+    };
+    let audio_duration = state
+        .track
+        .as_ref()
+        .map(|track| track.duration_seconds)
+        .unwrap_or(0.0);
+    let (start_sec, duration_sec, pitch_midi) = create_drag.proposed_bounds(audio_duration);
+    let Some(geometry) = memo_geometry(
+        start_sec,
+        duration_sec,
+        pitch_midi,
+        state,
+        content_rect,
+        view_start,
+        view_end,
+    ) else {
+        return;
+    };
+
+    let base_color = layer_color(layer.id.get());
+    let painter = painter.with_clip_rect(content_rect);
+    painter.rect_filled(
+        geometry.rect,
+        2.0,
+        Color32::from_rgba_unmultiplied(base_color.r(), base_color.g(), base_color.b(), 96),
+    );
+    painter.rect_stroke(
+        geometry.rect,
+        2.0,
+        Stroke::new(1.5, Color32::WHITE),
+        egui::StrokeKind::Inside,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -896,6 +1080,29 @@ fn resized_memo_bounds(
     }
 }
 
+fn created_memo_bounds(pressed_sec: f64, released_sec: f64, audio_duration: f64) -> (f64, f64) {
+    let audio_duration = audio_duration.max(0.0);
+    let pressed_sec = pressed_sec.clamp(0.0, audio_duration);
+    let released_sec = released_sec.clamp(0.0, audio_duration);
+    let (mut start_sec, mut end_sec) = if pressed_sec <= released_sec {
+        (pressed_sec, released_sec)
+    } else {
+        (released_sec, pressed_sec)
+    };
+
+    if end_sec - start_sec < MIN_MEMO_DURATION_SECONDS {
+        if released_sec >= pressed_sec {
+            end_sec = (start_sec + MIN_MEMO_DURATION_SECONDS).min(audio_duration);
+            start_sec = (end_sec - MIN_MEMO_DURATION_SECONDS).max(0.0);
+        } else {
+            start_sec = (end_sec - MIN_MEMO_DURATION_SECONDS).max(0.0);
+            end_sec = (start_sec + MIN_MEMO_DURATION_SECONDS).min(audio_duration);
+        }
+    }
+
+    (start_sec, end_sec - start_sec)
+}
+
 fn moved_memo_position(
     duration_sec: f64,
     start_offset_sec: f64,
@@ -938,6 +1145,11 @@ fn draw_pitch_scrollbar(painter: &egui::Painter, rect: egui::Rect, state: &AppSt
         egui::StrokeKind::Inside,
     );
 
+    let thumb = pitch_scrollbar_thumb_rect(rect, state);
+    painter.rect_filled(thumb, 4.0, Color32::from_rgb(90, 168, 204));
+}
+
+fn pitch_scrollbar_thumb_rect(rect: egui::Rect, state: &AppState) -> egui::Rect {
     let full_view = state.full_pitch_view();
     let visible_view = state.pitch_view();
     let total = full_view.pitch_count().max(1) as f32;
@@ -953,23 +1165,59 @@ fn draw_pitch_scrollbar(painter: &egui::Painter, rect: egui::Rect, state: &AppSt
         rect.top()..=rect.bottom(),
         (top_ratio + height_ratio).min(1.0),
     );
-    let thumb = egui::Rect::from_min_max(
+    egui::Rect::from_min_max(
         egui::pos2(rect.left(), thumb_top),
         egui::pos2(rect.right(), thumb_bottom.max(thumb_top + 2.0)),
-    );
-    painter.rect_filled(thumb, 4.0, Color32::from_rgb(90, 168, 204));
+    )
 }
 
-fn pitch_scroll_center_for_pointer(
+fn time_view_start_for_thumb_position(
+    duration: f64,
+    view_duration: f64,
+    pointer_t: f64,
+    thumb_offset_ratio: f64,
+) -> f64 {
+    let duration = duration.max(0.001);
+    let thumb_ratio = (view_duration / duration).clamp(0.0, 1.0);
+    let max_left_ratio = (1.0 - thumb_ratio).max(0.0);
+    let left_ratio = (pointer_t.clamp(0.0, 1.0) - thumb_ratio * thumb_offset_ratio.clamp(0.0, 1.0))
+        .clamp(0.0, max_left_ratio);
+    left_ratio * duration
+}
+
+fn time_pan_delta_for_scroll(scroll_delta: f32, view_duration: f64) -> f64 {
+    if scroll_delta.abs() <= f32::EPSILON {
+        0.0
+    } else {
+        -scroll_delta.signum() as f64 * view_duration * TIME_PAN_VIEW_FRACTION
+    }
+}
+
+fn scroll_delta_for_modifiers(raw_scroll_delta: egui::Vec2, modifiers: egui::Modifiers) -> f32 {
+    // Shiftを押したホイールは、OSやウィンドウシステムによっては
+    // 縦方向ではなく横方向のスクロールとして届く。
+    if !modifiers.shift || raw_scroll_delta.y.abs() > f32::EPSILON {
+        raw_scroll_delta.y
+    } else {
+        raw_scroll_delta.x
+    }
+}
+
+fn pitch_scroll_center_for_thumb_position(
     full_view: crate::app::state::PitchView,
     visible_view: crate::app::state::PitchView,
     pointer_t: f64,
+    thumb_offset_ratio: f64,
 ) -> f64 {
     let total = full_view.pitch_count() as f64;
     let visible = visible_view.pitch_count() as f64;
+    let height_ratio = (visible / total).clamp(0.0, 1.0);
+    let top_ratio = (pointer_t.clamp(0.0, 1.0) - height_ratio * thumb_offset_ratio.clamp(0.0, 1.0))
+        .clamp(0.0, (1.0 - height_ratio).max(0.0));
     let maximum_start = total - visible;
     let minimum_start = full_view.min_midi_note as f64;
-    let start = minimum_start + (1.0 - pointer_t.clamp(0.0, 1.0)) * maximum_start;
+    let start = minimum_start + (1.0 - height_ratio - top_ratio) * total;
+    debug_assert!((minimum_start..=minimum_start + maximum_start).contains(&start));
     start + visible / 2.0
 }
 
@@ -1363,11 +1611,12 @@ fn lerp_rgb(from: (u8, u8, u8), to: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
 mod tests {
     use super::{
         MemoEdge, apply_fundamental_emphasis, apply_unemphasized_pitch_attenuation,
-        column_frame_range, drawing_column_count, find_memo_hit, layer_color, memo_geometry,
-        memo_stroke_color, moved_memo_position, peak_display_strength, resized_memo_bounds,
-        subpixel_columns,
+        column_frame_range, created_memo_bounds, drawing_column_count, find_memo_hit, layer_color,
+        memo_geometry, memo_stroke_color, moved_memo_position, peak_display_strength,
+        pitch_scroll_center_for_thumb_position, resized_memo_bounds, scroll_delta_for_modifiers,
+        subpixel_columns, time_pan_delta_for_scroll, time_view_start_for_thumb_position,
     };
-    use crate::app::state::AppState;
+    use crate::app::state::{AppState, PitchView};
     use crate::model::Track;
     use eframe::egui;
 
@@ -1417,6 +1666,82 @@ mod tests {
         assert_eq!(apply_unemphasized_pitch_attenuation(0.8, false, 100.0), 0.0);
         assert!(
             (apply_unemphasized_pitch_attenuation(0.8, false, 75.0) - 0.2).abs() < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn created_memo_uses_the_dragged_time_range_in_both_directions() {
+        assert_eq!(created_memo_bounds(2.0, 5.0, 10.0), (2.0, 3.0));
+        assert_eq!(created_memo_bounds(5.0, 2.0, 10.0), (2.0, 3.0));
+    }
+
+    #[test]
+    fn created_memo_keeps_the_minimum_duration_inside_audio_bounds() {
+        let at_end = created_memo_bounds(9.999, 10.0, 10.0);
+        assert!((at_end.0 - 9.99).abs() < f64::EPSILON);
+        assert!((at_end.1 - 0.01).abs() < f64::EPSILON);
+
+        let at_start = created_memo_bounds(0.001, 0.0, 10.0);
+        assert_eq!(at_start, (0.0, 0.01));
+        assert_eq!(created_memo_bounds(0.0, 0.0, 0.005), (0.0, 0.005));
+    }
+
+    #[test]
+    fn time_scrollbar_click_centers_the_visible_range() {
+        assert_eq!(
+            time_view_start_for_thumb_position(100.0, 20.0, 0.5, 0.5),
+            40.0
+        );
+        assert_eq!(
+            time_view_start_for_thumb_position(100.0, 20.0, 0.0, 0.5),
+            0.0
+        );
+        assert_eq!(
+            time_view_start_for_thumb_position(100.0, 20.0, 1.0, 0.5),
+            80.0
+        );
+    }
+
+    #[test]
+    fn scrollbar_drag_preserves_the_grabbed_thumb_offset() {
+        assert_eq!(
+            time_view_start_for_thumb_position(100.0, 20.0, 0.5, 0.25),
+            45.0
+        );
+
+        let full = PitchView {
+            min_midi_note: 24,
+            max_midi_note: 108,
+        };
+        let visible = PitchView {
+            min_midi_note: 44,
+            max_midi_note: 64,
+        };
+        let centered = pitch_scroll_center_for_thumb_position(full, visible, 0.5, 0.5);
+        let grabbed_near_top = pitch_scroll_center_for_thumb_position(full, visible, 0.5, 0.25);
+        assert!(grabbed_near_top < centered);
+    }
+
+    #[test]
+    fn shift_scroll_pans_by_a_fraction_of_the_visible_duration() {
+        assert_eq!(time_pan_delta_for_scroll(1.0, 20.0), -3.0);
+        assert_eq!(time_pan_delta_for_scroll(-1.0, 20.0), 3.0);
+        assert_eq!(time_pan_delta_for_scroll(0.0, 20.0), 0.0);
+    }
+
+    #[test]
+    fn shift_scroll_uses_horizontal_delta_when_the_platform_maps_it_there() {
+        assert_eq!(
+            scroll_delta_for_modifiers(egui::vec2(0.0, 12.0), egui::Modifiers::SHIFT),
+            12.0
+        );
+        assert_eq!(
+            scroll_delta_for_modifiers(egui::vec2(-12.0, 0.0), egui::Modifiers::SHIFT),
+            -12.0
+        );
+        assert_eq!(
+            scroll_delta_for_modifiers(egui::Vec2::ZERO, egui::Modifiers::SHIFT),
+            0.0
         );
     }
 
