@@ -1,13 +1,13 @@
 # Current State
 
-Updated: 1789460370
+Updated: 1789465165
 
 Now:
-- Done: v0.5.0の実機テスト完了を反映し、全体仕様書、README、変更履歴、テスト項目を現行UIへ同期した。
+- Done: v0.6解析キャッシュを実装・自動テスト済み。
+- Pending: v0.6の実機確認。
 
 Next:
-- Notes時ノイズを、比較フェーズ切替時とメモ発音開始時に分けて切り分ける。
-- v0.6.0のループシーケンサー仕様を実装単位へ分解する。
+- 解析キャッシュの実機テスト結果を反映する。
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.

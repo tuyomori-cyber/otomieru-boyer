@@ -14,20 +14,28 @@ pub struct Track {
 
 impl Track {
     pub fn from_decoded(decoded: DecodedAudio) -> Self {
-        let stft = compute_stft(
-            &decoded.samples,
-            decoded.channels,
-            decoded.sample_rate,
-            StftSettings::default(),
-        );
-        let spectrogram = build_spectrogram(&stft);
+        let mut track = Self::from_decoded_without_spectrogram(decoded);
+        track.rebuild_spectrogram();
+        track
+    }
 
+    pub fn from_decoded_without_spectrogram(decoded: DecodedAudio) -> Self {
         Self {
             sample_rate: decoded.sample_rate,
             duration_seconds: decoded.duration_seconds(),
             channels: decoded.channels,
             samples: decoded.samples,
-            spectrogram: Some(spectrogram),
+            spectrogram: None,
         }
+    }
+
+    pub fn rebuild_spectrogram(&mut self) {
+        let stft = compute_stft(
+            &self.samples,
+            self.channels,
+            self.sample_rate,
+            StftSettings::default(),
+        );
+        self.spectrogram = Some(build_spectrogram(&stft));
     }
 }

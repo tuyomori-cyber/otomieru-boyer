@@ -5,14 +5,16 @@ use eframe::egui;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::analysis::stft::StftSettings;
 use crate::app::state::{AppState, UiFrameMetrics};
 use crate::audio::decoder::decode_file;
 use crate::audio::player::{AudioPlayer, PlayerSnapshot, TransportState, UI_REPAINT_INTERVAL};
 use crate::audio::preview_tone::{MemoToneRequest, PreviewTonePlayer, PreviewToneRequest};
 use crate::model::{PlaybackDspSettings, ProjectData, ProjectState};
 use crate::persistence::{
-    AppSettings, AudioIdentity, AudioMismatch, LoadOutcome, load_app_settings, load_sidecar,
-    save_app_settings, save_sidecar, sidecar_path,
+    AppSettings, AudioIdentity, AudioMismatch, CacheLoadOutcome, LoadOutcome, load_app_settings,
+    load_sidecar, load_spectrogram_cache, save_app_settings, save_sidecar, save_spectrogram_cache,
+    sidecar_path,
 };
 use crate::ui::{piano, spectrogram, timeline, toolbar};
 
@@ -75,12 +77,19 @@ impl OtomieruApp {
 
         match decode_file(&path) {
             Ok(decoded) => {
-                let track = crate::model::Track::from_decoded(decoded);
+                let mut track = crate::model::Track::from_decoded_without_spectrogram(decoded);
+                let analysis_status = self.load_or_build_spectrogram(&path, &mut track);
                 match self.player.load_track(&track) {
                     Ok(()) => {
                         self.player.disable_comparison();
                         self.state.set_loaded_track(path, track);
                         self.load_project_sidecar();
+                        if self.state.status_text.is_empty() {
+                            self.state.set_status(analysis_status);
+                        } else {
+                            self.state.status_text.push_str(" | ");
+                            self.state.status_text.push_str(&analysis_status);
+                        }
                         self.playhead_interpolator.reset(0.0);
                         self.last_applied_dsp_settings = None;
                         self.comparison_loop_range = None;
@@ -109,6 +118,83 @@ impl OtomieruApp {
                 self.state
                     .set_status(format!("読み込みに失敗しました: {error}"));
             }
+        }
+    }
+
+    /// 音源そのものは毎回デコードするが、重いSTFT・スペクトログラム生成は
+    /// 音源と解析条件が一致するキャッシュを利用する。
+    fn load_or_build_spectrogram(
+        &self,
+        path: &std::path::Path,
+        track: &mut crate::model::Track,
+    ) -> String {
+        let settings = StftSettings::default();
+        let identity = match AudioIdentity::from_audio(path, track) {
+            Ok(identity) => identity,
+            Err(error) => {
+                track.rebuild_spectrogram();
+                return format!(
+                    "解析しました（キャッシュ照合情報を取得できませんでした: {error}）"
+                );
+            }
+        };
+
+        match load_spectrogram_cache(path, &identity, settings) {
+            Ok((CacheLoadOutcome::Hit, Some(spectrogram))) => {
+                track.spectrogram = Some(spectrogram);
+                "解析キャッシュを利用しました。".to_owned()
+            }
+            Ok((CacheLoadOutcome::NotFound, _)) => {
+                track.rebuild_spectrogram();
+                self.save_spectrogram_cache_status(path, &identity, settings, track, "解析しました")
+            }
+            Ok((CacheLoadOutcome::Invalid, _)) => {
+                track.rebuild_spectrogram();
+                self.save_spectrogram_cache_status(
+                    path,
+                    &identity,
+                    settings,
+                    track,
+                    "解析キャッシュを再生成しました",
+                )
+            }
+            Ok((CacheLoadOutcome::Hit, None)) => {
+                track.rebuild_spectrogram();
+                self.save_spectrogram_cache_status(
+                    path,
+                    &identity,
+                    settings,
+                    track,
+                    "解析キャッシュを再生成しました",
+                )
+            }
+            Err(error) => {
+                track.rebuild_spectrogram();
+                self.save_spectrogram_cache_status(
+                    path,
+                    &identity,
+                    settings,
+                    track,
+                    &format!("解析しました（解析キャッシュを読み込めませんでした: {error}）"),
+                )
+            }
+        }
+    }
+
+    fn save_spectrogram_cache_status(
+        &self,
+        path: &std::path::Path,
+        identity: &AudioIdentity,
+        settings: StftSettings,
+        track: &crate::model::Track,
+        prefix: &str,
+    ) -> String {
+        let Some(spectrogram) = track.spectrogram.as_ref() else {
+            return prefix.to_owned();
+        };
+        match save_spectrogram_cache(path, identity, settings, spectrogram) {
+            Ok(_) => format!("{prefix}。解析キャッシュを保存しました。"),
+            Err(error) => format!("{prefix}（解析キャッシュを保存できませんでした: {error}）"),
         }
     }
 
