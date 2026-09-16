@@ -4,6 +4,7 @@ use crate::app::input::{
     MouseInputSettings, MousePreset, VariableMemoModifier, WheelAction, WheelModifier,
 };
 use crate::app::state::{AppState, PITCH_CLASS_NAMES};
+use crate::app::tool_palette::ToolPaletteItem;
 use crate::audio::preview_tone::PreviewTimbre;
 use crate::model::{EQ_BAND_COUNT, EQ_BAND_FREQUENCIES_HZ, ScalePreset};
 use crate::ui::spectrogram::layer_color;
@@ -18,7 +19,8 @@ pub struct ToolbarActions {
     pub stop_requested: bool,
     pub clear_loop_range_requested: bool,
     pub comparison_enabled_changed: Option<bool>,
-    pub mouse_input_changed: bool,
+    pub comparison_sequence_changed: bool,
+    pub app_settings_changed: bool,
     pub reset_visualization_requested: bool,
 }
 
@@ -91,9 +93,13 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
                     ui.close();
                 }
             });
-            ui.menu_button("分析ツール", |ui| {
-                if ui.button("分析ツールを開く…").clicked() {
-                    state.analysis_tools_popup_open = true;
+            ui.menu_button("ツール", |ui| {
+                if ui.button("ツールを開く…").clicked() {
+                    state.tools_popup_open = true;
+                    ui.close();
+                }
+                if ui.button("マスターパレット…").clicked() {
+                    state.tool_palette_editor_popup_open = true;
                     ui.close();
                 }
             });
@@ -218,6 +224,10 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
             if comparison_available && let Some(phase) = state.playback.comparison_phase() {
                 ui.label(format!("比較: {}", phase.label()));
             }
+
+            if ui.button("ツール").clicked() {
+                state.tools_popup_open = true;
+            }
         });
 
         ui.horizontal_wrapped(|ui| {
@@ -256,8 +266,9 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
         ui.add_space(4.0);
     });
 
-    show_analysis_tools_dialog(ctx, state);
-    actions.mouse_input_changed = show_mouse_settings_dialog(ctx, state);
+    actions.comparison_sequence_changed = show_tools_dialog(ctx, state);
+    actions.app_settings_changed |= show_tool_palette_editor_dialog(ctx, state);
+    actions.app_settings_changed |= show_mouse_settings_dialog(ctx, state);
     show_help_dialog(ctx, state);
 
     actions
@@ -299,47 +310,143 @@ fn show_help_dialog(ctx: &egui::Context, state: &mut AppState) {
                 "下部バーのドラッグでも時間表示を、右側バーのドラッグでも音高表示を移動できます。",
             );
             ui.separator();
-            ui.small("分析用の調整は分析ツールから、マウス操作は設定から変更できます。");
+            ui.small("耳コピ用の調整はツールから、マウス操作は設定から変更できます。");
         });
     state.help_popup_open = help_popup_open;
 }
 
-fn show_analysis_tools_dialog(ctx: &egui::Context, state: &mut AppState) {
-    let mut analysis_tools_popup_open = state.analysis_tools_popup_open;
-    egui::Window::new("分析ツール")
-        .open(&mut analysis_tools_popup_open)
+fn show_tools_dialog(ctx: &egui::Context, state: &mut AppState) -> bool {
+    let mut tools_popup_open = state.tools_popup_open;
+    let mut comparison_sequence_changed = false;
+    egui::Window::new("ツール")
+        .open(&mut tools_popup_open)
         .resizable(true)
         .scroll([true, true])
         .default_width(360.0)
         .default_height(540.0)
         .min_size([280.0, 220.0])
         .show(ctx, |ui| {
+            let visible_tools = state.tool_palette_items.clone();
+            for (index, tool) in visible_tools.iter().copied().enumerate() {
+                if index > 0 {
+                    ui.separator();
+                }
+                comparison_sequence_changed |= show_tool_section(ui, tool, state);
+            }
+        });
+    state.tools_popup_open = tools_popup_open;
+    comparison_sequence_changed
+}
+
+fn show_tool_palette_editor_dialog(ctx: &egui::Context, state: &mut AppState) -> bool {
+    let mut popup_open = state.tool_palette_editor_popup_open;
+    let mut changed = false;
+    egui::Window::new("マスターパレット")
+        .open(&mut popup_open)
+        .resizable(true)
+        .default_width(300.0)
+        .show(ctx, |ui| {
+            ui.label("表示する道具を選び、機能名をドラッグして順番を変更します。");
+            ui.separator();
+            let palette_order = state.tool_palette_order.clone();
+            let mut pending_visibility = None;
+            let mut pending_drop = None;
+            for (index, tool) in palette_order.iter().copied().enumerate() {
+                let mut visible = state.tool_palette_items.contains(&tool);
+                let can_disable = !visible || state.tool_palette_items.len() > 1;
+                let (drop_zone, dropped_tool) =
+                    ui.dnd_drop_zone::<ToolPaletteItem, _>(egui::Frame::NONE, |ui| {
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(can_disable, egui::Checkbox::new(&mut visible, ""))
+                                .changed()
+                            {
+                                pending_visibility = Some((tool, visible));
+                            }
+                            ui.dnd_drag_source(
+                                ui.id().with(("tool_palette_item", tool.label())),
+                                tool,
+                                |ui| {
+                                    ui.label(tool.label())
+                                        .on_hover_text("ドラッグして表示順を変更");
+                                },
+                            );
+                        });
+                    });
+                if let Some(dropped_tool) = dropped_tool {
+                    let drop_after = ui
+                        .ctx()
+                        .pointer_interact_pos()
+                        .is_some_and(|position| position.y > drop_zone.response.rect.center().y);
+                    pending_drop = Some((*dropped_tool, index + usize::from(drop_after)));
+                }
+            }
+            if let Some((tool, visible)) = pending_visibility {
+                if visible {
+                    state.tool_palette_items.push(tool);
+                } else {
+                    state.tool_palette_items.retain(|item| *item != tool);
+                }
+                state.sync_tool_palette_items_to_order();
+                changed = true;
+            }
+            if let Some((tool, destination)) = pending_drop
+                && let Some(source) = state
+                    .tool_palette_order
+                    .iter()
+                    .position(|item| *item == tool)
+            {
+                let destination = destination.saturating_sub(usize::from(source < destination));
+                if source != destination {
+                    state.tool_palette_order.remove(source);
+                    state.tool_palette_order.insert(destination, tool);
+                    state.sync_tool_palette_items_to_order();
+                    changed = true;
+                }
+            }
+            ui.separator();
+            if ui.button("既定構成へ戻す").clicked() {
+                state.tool_palette_items = crate::app::tool_palette::default_tool_palette_items();
+                state.tool_palette_order = crate::app::tool_palette::default_tool_palette_items();
+                changed = true;
+            }
+        });
+    state.tool_palette_editor_popup_open = popup_open;
+    changed
+}
+
+fn show_tool_section(ui: &mut egui::Ui, tool: ToolPaletteItem, state: &mut AppState) -> bool {
+    match tool {
+        ToolPaletteItem::Equalizer => {
             show_settings_section(
                 ui,
-                "settings_equalizer",
+                "tool_equalizer",
                 "EQ",
                 "再生停止中に調整できます。表示にも反映されます。",
                 |ui| show_equalizer_settings(ui, state),
             );
-            ui.separator();
-
+            false
+        }
+        ToolPaletteItem::Fundamental => {
             show_settings_section(
                 ui,
-                "settings_fundamental",
+                "tool_fundamental",
                 "基音強調",
                 "倍音列から基音候補を強調します。再生音には影響しません。",
                 |ui| show_fundamental_settings(ui, state),
             );
-            ui.separator();
-
-            show_settings_section(ui, "settings_timbre", "音色", "", |ui| {
+            false
+        }
+        ToolPaletteItem::Timbre => {
+            show_settings_section(ui, "tool_timbre", "音色", "", |ui| {
                 show_timbre_settings(ui, state);
             });
-            ui.separator();
-
+            false
+        }
+        ToolPaletteItem::Tuning => {
             show_settings_section(
                 ui,
-                "settings_tuning",
+                "tool_tuning",
                 "チューニング",
                 "元音源に合わせて、スペクトログラム押下時の試聴音だけを調整します。",
                 |ui| {
@@ -359,17 +466,91 @@ fn show_analysis_tools_dialog(ctx: &egui::Context, state: &mut AppState) {
                     }
                 },
             );
-            ui.separator();
-
+            false
+        }
+        ToolPaletteItem::Layers => {
             show_settings_section(
                 ui,
-                "settings_layers",
+                "tool_layers",
                 "レイヤー",
                 "入力先を選択し、レイヤーごとの表示・試聴設定を調整します。",
                 |ui| show_layer_settings(ui, state),
             );
-        });
-    state.analysis_tools_popup_open = analysis_tools_popup_open;
+            false
+        }
+        ToolPaletteItem::LoopSequencer => {
+            let mut changed = false;
+            show_settings_section(
+                ui,
+                "tool_loop_sequencer",
+                "比較パターン",
+                "比較の順番を設定する機能です。",
+                |ui| {
+                    changed |= show_loop_sequencer_settings(ui, state);
+                },
+            );
+            changed
+        }
+    }
+}
+
+fn show_loop_sequencer_settings(ui: &mut egui::Ui, state: &mut AppState) -> bool {
+    let sequence = state.playback.comparison_sequence.clone();
+    // 変更を描画後まで保留する。選択直後に後続行の描画を止めると、スクロール領域の
+    // 高さが一時的に縮み、eguiが現在位置を末尾へクランプしてしまう。
+    let mut pending_step_change = None;
+    for (index, phase) in sequence.iter().copied().enumerate() {
+        let mut selection = Some(phase);
+        egui::ComboBox::from_id_salt(("comparison_pattern_step", index))
+            .selected_text(phase.label())
+            .show_ui(ui, |ui| {
+                for candidate in [
+                    crate::model::ComparisonPhase::Original,
+                    crate::model::ComparisonPhase::Notes,
+                    crate::model::ComparisonPhase::Mix,
+                ] {
+                    ui.selectable_value(&mut selection, Some(candidate), candidate.label());
+                }
+                if sequence.len() > 1 {
+                    ui.selectable_value(&mut selection, None, "なし");
+                }
+            });
+        if selection != Some(phase) {
+            pending_step_change = Some((index, selection));
+        }
+    }
+
+    let mut addition = None;
+    if sequence.len() < crate::model::MAX_COMPARISON_SEQUENCE_LEN {
+        egui::ComboBox::from_id_salt("comparison_pattern_add")
+            .selected_text("追加…")
+            .show_ui(ui, |ui| {
+                for candidate in [
+                    crate::model::ComparisonPhase::Original,
+                    crate::model::ComparisonPhase::Notes,
+                    crate::model::ComparisonPhase::Mix,
+                ] {
+                    ui.selectable_value(&mut addition, Some(candidate), candidate.label());
+                }
+            });
+    } else {
+        ui.small("最大10件まで登録できます。");
+    }
+
+    if let Some((index, selection)) = pending_step_change {
+        match selection {
+            Some(replacement) => state.playback.comparison_sequence[index] = replacement,
+            None => {
+                state.playback.comparison_sequence.remove(index);
+            }
+        }
+        true
+    } else if let Some(phase) = addition {
+        state.playback.comparison_sequence.push(phase);
+        true
+    } else {
+        false
+    }
 }
 
 fn show_mouse_settings_dialog(ctx: &egui::Context, state: &mut AppState) -> bool {

@@ -1,4 +1,9 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+pub const MAX_COMPARISON_SEQUENCE_LEN: usize = 10;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ComparisonPhase {
     Original,
     Notes,
@@ -25,6 +30,10 @@ pub const DEFAULT_COMPARISON_SEQUENCE: &[ComparisonPhase] = &[
     ComparisonPhase::Mix,
 ];
 
+pub fn is_valid_comparison_sequence(sequence: &[ComparisonPhase]) -> bool {
+    !sequence.is_empty() && sequence.len() <= MAX_COMPARISON_SEQUENCE_LEN
+}
+
 pub fn comparison_phase_at(
     sequence: &[ComparisonPhase],
     sequence_index: usize,
@@ -34,7 +43,10 @@ pub fn comparison_phase_at(
 
 #[cfg(test)]
 mod tests {
-    use super::{ComparisonPhase, DEFAULT_COMPARISON_SEQUENCE, comparison_phase_at};
+    use super::{
+        ComparisonPhase, DEFAULT_COMPARISON_SEQUENCE, MAX_COMPARISON_SEQUENCE_LEN,
+        comparison_phase_at, is_valid_comparison_sequence,
+    };
 
     #[test]
     fn default_sequence_repeats_original_notes_and_mix() {
@@ -65,5 +77,14 @@ mod tests {
     #[test]
     fn empty_sequence_has_no_phase() {
         assert_eq!(comparison_phase_at(&[], 0), None);
+    }
+
+    #[test]
+    fn a_sequence_requires_between_one_and_ten_steps() {
+        assert!(!is_valid_comparison_sequence(&[]));
+        assert!(is_valid_comparison_sequence(DEFAULT_COMPARISON_SEQUENCE));
+        assert!(is_valid_comparison_sequence(&[ComparisonPhase::Mix; 10]));
+        assert!(!is_valid_comparison_sequence(&[ComparisonPhase::Mix; 11]));
+        assert_eq!(MAX_COMPARISON_SEQUENCE_LEN, 10);
     }
 }

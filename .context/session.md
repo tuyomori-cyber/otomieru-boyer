@@ -1,13 +1,13 @@
 # Current State
 
-Updated: 1789473542
+Updated: 1789550739
 
 Now:
-- Done: ロード時間表示を実機確認済み（キャッシュなし約18秒、あり約8秒）。
+- Done: v0.7.0をリリース済みとして、実装・テスト記録・README・仕様書・変更履歴・バージョン表記を同期した。
 
 Next:
+- v0.8.0のMIDI試聴と音色拡張の実装方針を具体化する。
 - Notes時ノイズの発生源を切り分ける。
-- 非同期ロードとロード中経過時間の動的表示は、優先度を下げて以降の版で再検討する。
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.

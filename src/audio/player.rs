@@ -12,7 +12,7 @@ use cpal::{
 use crate::audio::comparison::{ComparisonAudioControl, ComparisonAudioSnapshot};
 use crate::audio::dsp_engine::DspEngine;
 use crate::audio::timestretch::DspTransportEvent;
-use crate::model::{PlaybackDspSettings, Track};
+use crate::model::{ComparisonPhase, PlaybackDspSettings, Track};
 
 pub struct AudioPlayer {
     runtime: Option<Arc<PlaybackRuntime>>,
@@ -225,6 +225,10 @@ impl AudioPlayer {
 
     pub fn reset_comparison_to_start(&self) {
         self.comparison_control.reset_to_start_if_enabled();
+    }
+
+    pub fn set_comparison_sequence(&self, sequence: &[ComparisonPhase]) {
+        self.comparison_control.set_sequence(sequence);
     }
 
     pub fn set_loop_enabled(&mut self, enabled: bool) {

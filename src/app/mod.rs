@@ -1,5 +1,6 @@
 pub mod input;
 pub mod state;
+pub mod tool_palette;
 
 use eframe::egui;
 use std::sync::Arc;
@@ -46,10 +47,14 @@ impl OtomieruApp {
                     state.set_status(format!("操作設定を保存できませんでした: {error}"));
                 }
                 state.mouse_input = settings.mouse_input;
+                state.tool_palette_items = settings.tool_palette_items;
+                state.tool_palette_order = settings.tool_palette_order;
+                state.playback.comparison_sequence = settings.comparison_sequence;
             }
             Ok(None) => {}
             Err(error) => state.set_status(format!("操作設定を読み込めませんでした: {error}")),
         }
+        player.set_comparison_sequence(&state.playback.comparison_sequence);
         Self {
             state,
             player,
@@ -415,14 +420,17 @@ impl eframe::App for OtomieruApp {
             ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S));
         let undo_pressed = consume_project_undo_shortcut(ctx);
         let actions = toolbar::show(ctx, &mut self.state);
-        if actions.mouse_input_changed {
+        if actions.app_settings_changed || actions.comparison_sequence_changed {
             let settings = AppSettings {
                 mouse_input: self.state.mouse_input.clone(),
+                tool_palette_items: self.state.tool_palette_items.clone(),
+                tool_palette_order: self.state.tool_palette_order.clone(),
+                comparison_sequence: self.state.playback.comparison_sequence.clone(),
                 ..AppSettings::default()
             };
             if let Err(error) = save_app_settings(&settings) {
                 self.state
-                    .set_status(format!("操作設定を保存できませんでした: {error}"));
+                    .set_status(format!("ユーザー設定を保存できませんでした: {error}"));
             }
         }
         if actions.open_requested {
@@ -446,6 +454,13 @@ impl eframe::App for OtomieruApp {
         }
         if let Some(enabled) = actions.comparison_enabled_changed {
             self.set_comparison_enabled(enabled);
+        }
+        if actions.comparison_sequence_changed {
+            self.player
+                .set_comparison_sequence(&self.state.playback.comparison_sequence);
+            if self.state.playback.comparison_enabled {
+                self.set_comparison_enabled(true);
+            }
         }
         self.sync_comparison_state();
         self.sync_transport_state();

@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::app::input::MouseInputSettings;
+use crate::app::tool_palette::{
+    ToolPaletteItem, default_tool_palette_items, ordered_visible_tools,
+};
 use crate::audio::preview_tone::PreviewTimbre;
 use crate::model::{PlaybackState, ProjectState, Selection, Track};
 
@@ -77,12 +80,20 @@ pub struct AppState {
     pub source_audio_muted: bool,
     pub preview_timbre: PreviewTimbre,
     pub mouse_input: MouseInputSettings,
-    pub analysis_tools_popup_open: bool,
+    pub tool_palette_items: Vec<ToolPaletteItem>,
+    pub tool_palette_order: Vec<ToolPaletteItem>,
+    pub tools_popup_open: bool,
+    pub tool_palette_editor_popup_open: bool,
     pub mouse_settings_popup_open: bool,
     pub help_popup_open: bool,
 }
 
 impl AppState {
+    pub fn sync_tool_palette_items_to_order(&mut self) {
+        self.tool_palette_items =
+            ordered_visible_tools(&self.tool_palette_order, &self.tool_palette_items);
+    }
+
     pub fn status_message(&self) -> String {
         if let Some(track) = &self.track {
             let file_name = self
@@ -130,11 +141,13 @@ impl AppState {
     }
 
     pub fn set_loaded_track(&mut self, path: PathBuf, track: Track) {
+        let comparison_sequence = self.playback.comparison_sequence.clone();
         self.loaded_file_path = Some(path);
         self.track = Some(track);
         self.project = ProjectState::new();
         self.project.mark_saved();
         self.playback = PlaybackState::default();
+        self.playback.comparison_sequence = comparison_sequence;
         self.display_playhead_position_seconds = 0.0;
         self.view_start_seconds = 0.0;
         self.view_zoom = 1.0;
@@ -325,7 +338,10 @@ impl Default for AppState {
             source_audio_muted: false,
             preview_timbre: PreviewTimbre::Piano,
             mouse_input: MouseInputSettings::default(),
-            analysis_tools_popup_open: false,
+            tool_palette_items: default_tool_palette_items(),
+            tool_palette_order: default_tool_palette_items(),
+            tools_popup_open: false,
+            tool_palette_editor_popup_open: false,
             mouse_settings_popup_open: false,
             help_popup_open: false,
         }

@@ -5,7 +5,10 @@ mod project;
 mod selection;
 mod track;
 
-pub use comparison::{ComparisonPhase, DEFAULT_COMPARISON_SEQUENCE, comparison_phase_at};
+pub use comparison::{
+    ComparisonPhase, DEFAULT_COMPARISON_SEQUENCE, MAX_COMPARISON_SEQUENCE_LEN, comparison_phase_at,
+    is_valid_comparison_sequence,
+};
 pub use playback::PlaybackState;
 pub use playback_dsp::{
     EQ_BAND_COUNT, EQ_BAND_FREQUENCIES_HZ, EqualizerSettings, PlaybackDspSettings,

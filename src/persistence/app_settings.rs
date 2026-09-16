@@ -6,6 +6,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::app::input::MouseInputSettings;
+use crate::app::tool_palette::{
+    ToolPaletteItem, default_tool_palette_items, normalized_tool_palette_order,
+    ordered_visible_tools,
+};
+use crate::model::{ComparisonPhase, DEFAULT_COMPARISON_SEQUENCE, is_valid_comparison_sequence};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
 pub const FORMAT_VERSION: u32 = 1;
@@ -15,6 +20,10 @@ pub const FORMAT_VERSION: u32 = 1;
 pub struct AppSettings {
     pub format_version: u32,
     pub mouse_input: MouseInputSettings,
+    pub tool_palette_items: Vec<ToolPaletteItem>,
+    #[serde(default)]
+    pub tool_palette_order: Vec<ToolPaletteItem>,
+    pub comparison_sequence: Vec<ComparisonPhase>,
 }
 
 impl Default for AppSettings {
@@ -22,6 +31,9 @@ impl Default for AppSettings {
         Self {
             format_version: FORMAT_VERSION,
             mouse_input: MouseInputSettings::default(),
+            tool_palette_items: default_tool_palette_items(),
+            tool_palette_order: default_tool_palette_items(),
+            comparison_sequence: DEFAULT_COMPARISON_SEQUENCE.to_vec(),
         }
     }
 }
@@ -99,6 +111,7 @@ fn load_app_settings_with_migration(
         let mut settings: AppSettings =
             serde_json::from_slice(&json).map_err(AppSettingsError::Json)?;
         settings.format_version = FORMAT_VERSION;
+        normalize_app_settings(&mut settings);
         return Ok((Some(settings), true));
     }
     if header.format_version != FORMAT_VERSION {
@@ -106,9 +119,38 @@ fn load_app_settings_with_migration(
             header.format_version,
         ));
     }
-    serde_json::from_slice(&json)
-        .map(|settings| (Some(settings), false))
-        .map_err(AppSettingsError::Json)
+    let mut settings: AppSettings =
+        serde_json::from_slice(&json).map_err(AppSettingsError::Json)?;
+    let normalized = normalize_app_settings(&mut settings);
+    Ok((Some(settings), normalized))
+}
+
+fn normalize_app_settings(settings: &mut AppSettings) -> bool {
+    normalize_comparison_sequence(settings) | normalize_tool_palette(settings)
+}
+
+fn normalize_comparison_sequence(settings: &mut AppSettings) -> bool {
+    if is_valid_comparison_sequence(&settings.comparison_sequence) {
+        false
+    } else {
+        settings.comparison_sequence = DEFAULT_COMPARISON_SEQUENCE.to_vec();
+        true
+    }
+}
+
+fn normalize_tool_palette(settings: &mut AppSettings) -> bool {
+    let original_order = settings.tool_palette_order.clone();
+    let original_visible = settings.tool_palette_items.clone();
+    let order = normalized_tool_palette_order(&original_order, &original_visible);
+    let visible = ordered_visible_tools(&order, &original_visible);
+    let visible = if visible.is_empty() {
+        default_tool_palette_items()
+    } else {
+        visible
+    };
+    settings.tool_palette_order = order;
+    settings.tool_palette_items = visible;
+    settings.tool_palette_order != original_order || settings.tool_palette_items != original_visible
 }
 
 fn save_app_settings_to(path: &Path, settings: &AppSettings) -> Result<(), AppSettingsError> {
@@ -143,6 +185,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{AppSettings, AppSettingsError, load_app_settings_from, save_app_settings_to};
+    use crate::model::ComparisonPhase;
 
     fn test_path() -> std::path::PathBuf {
         let unique = SystemTime::now()
@@ -201,6 +244,63 @@ mod tests {
 
         let settings = load_app_settings_from(&path).unwrap().unwrap();
         assert_eq!(settings.format_version, super::FORMAT_VERSION);
+
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn settings_without_tool_palette_items_use_defaults() {
+        let path = test_path();
+        save_app_settings_to(&path, &AppSettings::default()).unwrap();
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("tool_palette_items");
+        fs::write(&path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+
+        let settings = load_app_settings_from(&path).unwrap().unwrap();
+        assert_eq!(
+            settings.tool_palette_items,
+            AppSettings::default().tool_palette_items
+        );
+
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn invalid_loop_sequencer_settings_fall_back_to_the_default_sequence() {
+        for sequence in [vec![], vec![ComparisonPhase::Mix; 11]] {
+            let path = test_path();
+            let settings = AppSettings {
+                comparison_sequence: sequence,
+                ..AppSettings::default()
+            };
+            save_app_settings_to(&path, &settings).unwrap();
+
+            let loaded = load_app_settings_from(&path).unwrap().unwrap();
+            assert_eq!(
+                loaded.comparison_sequence,
+                AppSettings::default().comparison_sequence
+            );
+
+            let _ = fs::remove_dir_all(path.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn old_palette_settings_keep_their_visible_order_as_the_master_order() {
+        use crate::app::tool_palette::ToolPaletteItem::{Equalizer, Timbre};
+
+        let path = test_path();
+        let settings = AppSettings {
+            tool_palette_items: vec![Timbre, Equalizer],
+            tool_palette_order: vec![],
+            ..AppSettings::default()
+        };
+        save_app_settings_to(&path, &settings).unwrap();
+
+        let loaded = load_app_settings_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.tool_palette_items, [Timbre, Equalizer]);
+        assert_eq!(&loaded.tool_palette_order[..2], &[Timbre, Equalizer]);
 
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
