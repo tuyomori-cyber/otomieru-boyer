@@ -11,6 +11,7 @@ pub struct PlaybackState {
     pub comparison_enabled: bool,
     pub comparison_sequence: Vec<ComparisonPhase>,
     pub comparison_sequence_index: usize,
+    pub the_world_active: bool,
 }
 
 impl Default for PlaybackState {
@@ -23,6 +24,7 @@ impl Default for PlaybackState {
             comparison_enabled: false,
             comparison_sequence: DEFAULT_COMPARISON_SEQUENCE.to_vec(),
             comparison_sequence_index: 0,
+            the_world_active: false,
         }
     }
 }

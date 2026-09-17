@@ -416,6 +416,8 @@ impl eframe::App for OtomieruApp {
         self.state.ui_frame_metrics = self.ui_frame_monitor.observe(ctx.pixels_per_point());
         let space_pressed =
             ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Space));
+        let the_world_pressed = (!ctx.wants_keyboard_input())
+            && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::T));
         let save_pressed =
             ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S));
         let undo_pressed = consume_project_undo_shortcut(ctx);
@@ -439,11 +441,14 @@ impl eframe::App for OtomieruApp {
         if actions.save_requested || (save_pressed && self.state.track.is_some()) {
             self.save_project_sidecar();
         }
-        if (undo_pressed || actions.undo_requested) && self.state.project.undo() {
+        if !self.state.playback.the_world_active
+            && (undo_pressed || actions.undo_requested)
+            && self.state.project.undo()
+        {
             self.state
                 .set_status("直前の音高メモ編集を取り消しました。");
         }
-        if actions.clear_loop_range_requested {
+        if actions.clear_loop_range_requested && !self.state.playback.the_world_active {
             self.state.selection.clear();
             self.state
                 .set_status("ループ範囲を消去しました。曲先頭へは |< を使います。");
@@ -452,7 +457,9 @@ impl eframe::App for OtomieruApp {
             self.state.reset_visualization_view();
             ctx.request_repaint();
         }
-        if let Some(enabled) = actions.comparison_enabled_changed {
+        if let Some(enabled) = actions.comparison_enabled_changed
+            && !self.state.playback.the_world_active
+        {
             self.set_comparison_enabled(enabled);
         }
         if actions.comparison_sequence_changed {
@@ -468,7 +475,7 @@ impl eframe::App for OtomieruApp {
             .set_source_volume(self.state.source_audio_volume);
         self.player.set_source_muted(self.state.source_audio_muted);
         self.sync_dsp_settings();
-        if actions.seek_to_start_requested {
+        if actions.seek_to_start_requested && !self.state.playback.the_world_active {
             self.player.seek_to_start();
             self.player.reset_comparison_to_start();
             self.state.playback.comparison_sequence_index = 0;
@@ -493,9 +500,13 @@ impl eframe::App for OtomieruApp {
             self.player.reset_comparison_to_start();
             self.state.playback.comparison_sequence_index = 0;
             self.state.playback.playing = false;
+            self.state.playback.the_world_active = false;
             self.state.playback.position_seconds = 0.0;
             self.state.display_playhead_position_seconds = 0.0;
             self.playhead_interpolator.reset(0.0);
+        }
+        if actions.toggle_the_world_requested || the_world_pressed {
+            self.state.playback.the_world_active = self.player.toggle_the_world();
         }
 
         let previous_position_seconds = self.state.playback.position_seconds;
@@ -505,11 +516,16 @@ impl eframe::App for OtomieruApp {
         self.state.playback.comparison_enabled = snapshot.comparison.phase.is_some();
         self.state.playback.comparison_sequence_index =
             snapshot.comparison.sequence_index.unwrap_or(0);
+        self.state.playback.the_world_active = snapshot.the_world_active;
         self.sync_pitch_memo_playback(&snapshot);
         self.state.display_playhead_position_seconds = self.playhead_interpolator.update(
             snapshot.position_seconds,
             self.state.playback.playing,
-            self.state.playback.dsp.speed_ratio as f64,
+            if snapshot.the_world_active {
+                0.0
+            } else {
+                self.state.playback.dsp.speed_ratio as f64
+            },
         );
         self.state
             .follow_playhead_if_needed(previous_position_seconds);
@@ -533,7 +549,9 @@ impl eframe::App for OtomieruApp {
                         visualization_height,
                         &mut self.spectrogram_cache,
                     );
-                    if let Some(seconds) = spectrogram_actions.seek_seconds {
+                    if let Some(seconds) = spectrogram_actions.seek_seconds
+                        && !self.state.playback.the_world_active
+                    {
                         self.player.seek_to_seconds(seconds);
                         self.state.playback.position_seconds = seconds;
                         self.state.display_playhead_position_seconds = seconds;

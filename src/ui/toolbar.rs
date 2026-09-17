@@ -17,6 +17,7 @@ pub struct ToolbarActions {
     pub play_pause_requested: bool,
     pub seek_to_start_requested: bool,
     pub stop_requested: bool,
+    pub toggle_the_world_requested: bool,
     pub clear_loop_range_requested: bool,
     pub comparison_enabled_changed: Option<bool>,
     pub comparison_sequence_changed: bool,
@@ -86,6 +87,27 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
                     actions.stop_requested = true;
                     ui.close();
                 }
+                ui.separator();
+                if ui
+                    .add_enabled(
+                        state.playback.playing || state.playback.the_world_active,
+                        egui::Button::new("The World -Spectral Freeze-").shortcut_text("T"),
+                    )
+                    .clicked()
+                {
+                    actions.toggle_the_world_requested = true;
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        state.playback.playing || state.playback.the_world_active,
+                        egui::Button::new("タイムストレッチ 0.00x（The World）"),
+                    )
+                    .clicked()
+                {
+                    actions.toggle_the_world_requested = true;
+                    ui.close();
+                }
             });
             ui.menu_button("表示", |ui| {
                 if ui.button("時間・音高表示を初期化").clicked() {
@@ -132,7 +154,9 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
         ui.separator();
 
         ui.horizontal_wrapped(|ui| {
-            let dsp_controls_enabled = state.track.is_some() && !state.playback.playing;
+            let dsp_controls_enabled = state.track.is_some()
+                && !state.playback.playing
+                && !state.playback.the_world_active;
 
             let play_label = if state.playback.playing {
                 "Pause"
@@ -147,7 +171,10 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
             }
 
             if ui
-                .add_enabled(state.track.is_some(), egui::Button::new("|<"))
+                .add_enabled(
+                    state.track.is_some() && !state.playback.the_world_active,
+                    egui::Button::new("|<"),
+                )
                 .clicked()
             {
                 actions.seek_to_start_requested = true;
@@ -162,10 +189,22 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
 
             ui.separator();
 
-            ui.add_enabled_ui(dsp_controls_enabled, |ui| {
-                egui::ComboBox::from_label("Speed")
-                    .selected_text(format!("{:.2}x", state.playback.dsp.speed_ratio))
-                    .show_ui(ui, |ui| {
+            if state.playback.the_world_active {
+                ui.colored_label(egui::Color32::from_rgb(180, 90, 255), "THE WORLD");
+            }
+
+            egui::ComboBox::from_label("Speed")
+                .selected_text(if state.playback.the_world_active {
+                    "0.00x（The World）".to_owned()
+                } else {
+                    format!("{:.2}x", state.playback.dsp.speed_ratio)
+                })
+                .show_ui(ui, |ui| {
+                    if state.playback.the_world_active {
+                        if ui.selectable_label(true, "0.00x（The World）").clicked() {
+                            actions.toggle_the_world_requested = true;
+                        }
+                    } else if !state.playback.playing {
                         for speed in [0.50_f32, 0.75, 1.00, 1.25, 1.50] {
                             ui.selectable_value(
                                 &mut state.playback.dsp.speed_ratio,
@@ -173,8 +212,8 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
                                 format!("{speed:.2}x"),
                             );
                         }
-                    });
-            });
+                    }
+                });
 
             ui.separator();
 
@@ -194,10 +233,13 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
 
             ui.separator();
 
-            ui.checkbox(&mut state.playback.loop_enabled, "Loop");
+            ui.add_enabled(
+                !state.playback.the_world_active,
+                egui::Checkbox::new(&mut state.playback.loop_enabled, "Loop"),
+            );
             if ui
                 .add_enabled(
-                    state.selection.normalized().is_some(),
+                    state.selection.normalized().is_some() && !state.playback.the_world_active,
                     egui::Button::new("消去"),
                 )
                 .on_disabled_hover_text("消去するループ範囲がありません。")
@@ -209,7 +251,8 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
 
             let comparison_available = state.track.is_some()
                 && state.playback.loop_enabled
-                && state.selection.normalized().is_some();
+                && state.selection.normalized().is_some()
+                && !state.playback.the_world_active;
             let mut comparison_enabled = state.playback.comparison_enabled && comparison_available;
             if ui
                 .add_enabled(

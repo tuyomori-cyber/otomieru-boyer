@@ -247,6 +247,22 @@ pub fn show(
             content_rect.bottom(),
             current_x,
         );
+        if state.playback.the_world_active {
+            painter.line_segment(
+                [
+                    egui::pos2(current_x, content_rect.top()),
+                    egui::pos2(current_x, content_rect.bottom()),
+                ],
+                Stroke::new(2.0, Color32::from_rgb(180, 90, 255)),
+            );
+            painter.text(
+                egui::pos2(current_x + 4.0, content_rect.top() + 4.0),
+                Align2::LEFT_TOP,
+                "THE WORLD",
+                FontId::proportional(12.0),
+                Color32::from_rgb(205, 155, 255),
+            );
+        }
     }
 
     painter.rect_filled(

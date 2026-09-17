@@ -136,8 +136,9 @@ impl AppState {
     /// 停止中は従来どおり編集できる。再生中は、有効なループ範囲を
     /// 繰り返している場合だけ編集を許可する。
     pub fn can_edit_pitch_memos(&self) -> bool {
-        !self.playback.playing
-            || (self.playback.loop_enabled && self.selection.normalized().is_some())
+        !self.playback.the_world_active
+            && (!self.playback.playing
+                || (self.playback.loop_enabled && self.selection.normalized().is_some()))
     }
 
     pub fn set_loaded_track(&mut self, path: PathBuf, track: Track) {

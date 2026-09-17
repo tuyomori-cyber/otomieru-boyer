@@ -1,13 +1,13 @@
 # Current State
 
-Updated: 1789550739
+Updated: 1789638580
 
 Now:
-- Done: v0.7.0をリリース済みとして、実装・テスト記録・README・仕様書・変更履歴・バージョン表記を同期した。
+- Done: Freeze中の再生位置線補間を停止し、Freeze波形を4重オーバーラップ加算へ修正した。
 
 Next:
-- v0.8.0のMIDI試聴と音色拡張の実装方針を具体化する。
-- Notes時ノイズの発生源を切り分ける。
+- Linux実機で位置線停止とFreeze音の連続性を再確認する。
+- 比較フェーズの最終ミックス全体をFreezeするため、音高メモ出力を統合する。
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.

@@ -34,7 +34,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, left_offset: f32) -> Timeli
     let response = ui.interact(
         timeline_rect,
         ui.id().with("loop-range-timeline"),
-        Sense::click_and_drag(),
+        if state.playback.the_world_active {
+            Sense::hover()
+        } else {
+            Sense::click_and_drag()
+        },
     );
 
     painter.rect_filled(full_rect, 0.0, Color32::TRANSPARENT);

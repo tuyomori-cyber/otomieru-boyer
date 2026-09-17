@@ -4,5 +4,6 @@ pub mod dsp_engine;
 pub mod piano_samples;
 pub mod player;
 pub mod preview_tone;
+pub mod spectral_freeze;
 pub mod streaming;
 pub mod timestretch;

@@ -11,6 +11,7 @@ use cpal::{
 
 use crate::audio::comparison::{ComparisonAudioControl, ComparisonAudioSnapshot};
 use crate::audio::dsp_engine::DspEngine;
+use crate::audio::spectral_freeze::SpectralFreeze;
 use crate::audio::timestretch::DspTransportEvent;
 use crate::model::{ComparisonPhase, PlaybackDspSettings, Track};
 
@@ -26,6 +27,7 @@ pub struct PlayerSnapshot {
     pub position_seconds: f64,
     pub transport_generation: u64,
     pub comparison: ComparisonAudioSnapshot,
+    pub the_world_active: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -162,6 +164,7 @@ impl AudioPlayer {
 
     pub fn stop(&mut self) {
         if let Some(runtime) = &self.runtime {
+            runtime.spectral_freeze.stop();
             runtime
                 .transport
                 .store(TransportState::Stopped.as_u8(), Ordering::Relaxed);
@@ -204,6 +207,7 @@ impl AudioPlayer {
                 position_seconds: 0.0,
                 transport_generation: 0,
                 comparison: self.comparison_control.snapshot(),
+                the_world_active: false,
             };
         };
 
@@ -212,7 +216,30 @@ impl AudioPlayer {
             position_seconds: runtime.current_position_seconds(),
             transport_generation: runtime.transport_generation.load(Ordering::Relaxed),
             comparison: self.comparison_control.snapshot(),
+            the_world_active: runtime.spectral_freeze.is_active(),
         }
+    }
+
+    pub fn toggle_the_world(&self) -> bool {
+        let Some(runtime) = &self.runtime else {
+            return false;
+        };
+        if runtime.spectral_freeze.is_active() {
+            runtime.spectral_freeze.begin_deactivation();
+            return false;
+        }
+        if runtime.transport.load(Ordering::Relaxed) != TransportState::Playing.as_u8() {
+            return false;
+        }
+        let position = runtime.current_position_frames();
+        runtime
+            .spectral_freeze
+            .activate(position, |frame, channel| {
+                runtime
+                    .dsp_engine
+                    .render_source_sample(frame as f64, channel)
+            });
+        true
     }
 
     pub fn enable_comparison_from_start(&self) {
@@ -313,6 +340,7 @@ struct PlaybackRuntime {
     source_volume_bits: AtomicU32,
     source_muted: AtomicBool,
     comparison_control: Arc<ComparisonAudioControl>,
+    spectral_freeze: SpectralFreeze,
 }
 
 impl PlaybackRuntime {
@@ -338,6 +366,7 @@ impl PlaybackRuntime {
             source_volume_bits: AtomicU32::new(1.0f32.to_bits()),
             source_muted: AtomicBool::new(false),
             comparison_control,
+            spectral_freeze: SpectralFreeze::new(config.channels as usize, config.sample_rate.0),
         }
     }
 
@@ -439,7 +468,10 @@ where
     let mut streamed_frame = [0.0f32; 32];
 
     for frame in output.chunks_mut(output_channels) {
-        if let Some((loop_start, loop_end)) = loop_range
+        let freeze_gains = runtime.spectral_freeze.mix_gains();
+        let frozen = freeze_gains.is_some();
+        if !frozen
+            && let Some((loop_start, loop_end)) = loop_range
             && position_frames >= loop_end
         {
             position_frames = loop_start;
@@ -464,6 +496,27 @@ where
             for sample in frame {
                 *sample = T::from_sample(0.0);
             }
+            continue;
+        }
+
+        if let Some((freeze_gain, normal_gain)) = freeze_gains {
+            let source_is_audible = runtime
+                .comparison_control
+                .snapshot()
+                .source_is_audible(runtime.source_muted.load(Ordering::Relaxed));
+            for (channel, sample) in frame.iter_mut().enumerate() {
+                let frozen_value = runtime.spectral_freeze.sample(channel);
+                let normal_value = runtime
+                    .dsp_engine
+                    .render_source_sample(position_frames, channel);
+                *sample = T::from_sample(if source_is_audible {
+                    (frozen_value * freeze_gain + normal_value * normal_gain) * source_volume
+                } else {
+                    0.0
+                });
+            }
+            runtime.spectral_freeze.advance();
+            position_frames = runtime.spectral_freeze.position_frames();
             continue;
         }
 
