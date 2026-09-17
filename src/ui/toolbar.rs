@@ -201,10 +201,24 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> ToolbarActions {
                 })
                 .show_ui(ui, |ui| {
                     if state.playback.the_world_active {
-                        if ui.selectable_label(true, "0.00x（The World）").clicked() {
+                        if ui.selectable_label(true, "The Worldを解除").clicked() {
                             actions.toggle_the_world_requested = true;
                         }
-                    } else if !state.playback.playing {
+                    } else {
+                        // 停止中も選択肢を表示し、The Worldを開始できないことを
+                        // メニューと同じ状態で明示する。
+                        if ui
+                            .add_enabled(
+                                state.playback.playing,
+                                egui::Button::selectable(false, "0.00x（The World）"),
+                            )
+                            .clicked()
+                        {
+                            actions.toggle_the_world_requested = true;
+                        }
+                    }
+
+                    if !state.playback.playing && !state.playback.the_world_active {
                         for speed in [0.50_f32, 0.75, 1.00, 1.25, 1.50] {
                             ui.selectable_value(
                                 &mut state.playback.dsp.speed_ratio,

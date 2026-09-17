@@ -164,4 +164,28 @@ mod tests {
         }
         assert_eq!(sample, freeze.sample(0));
     }
+
+    #[test]
+    fn boundary_short_and_silent_inputs_produce_only_finite_samples() {
+        for (samples, positions) in [
+            (vec![0.25_f32, -0.5, 0.75], vec![0.0, 2.0, 3.0]),
+            (vec![0.0_f32; 8], vec![0.0, 7.0, 8.0]),
+        ] {
+            for position in positions {
+                let freeze = SpectralFreeze::new(1, 48_000);
+                freeze.activate(position, |frame, _| {
+                    samples.get(frame).copied().unwrap_or(0.0)
+                });
+
+                for _ in 0..FREEZE_HOP_SIZE * 2 {
+                    assert!(freeze.sample(0).is_finite());
+                    freeze.advance();
+                }
+
+                freeze.begin_deactivation();
+                freeze.stop();
+                assert!(!freeze.is_active());
+            }
+        }
+    }
 }

@@ -441,6 +441,27 @@ mod tests {
     }
 
     #[test]
+    fn sidecar_does_not_persist_freeze_runtime_state() {
+        let directory = test_directory("freeze-runtime");
+        let audio_path = directory.join("song.flac");
+        fs::write(&audio_path, b"audio").unwrap();
+
+        save_sidecar(
+            &audio_path,
+            identity("song.flac"),
+            &ProjectState::new().data,
+        )
+        .unwrap();
+        let json = fs::read_to_string(sidecar_path(&audio_path).unwrap())
+            .unwrap()
+            .to_lowercase();
+
+        assert!(!json.contains("the_world"));
+        assert!(!json.contains("freeze"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn audio_mismatch_is_reported_without_rejecting_the_project() {
         let directory = test_directory("mismatch");
         let audio_path = directory.join("song.flac");

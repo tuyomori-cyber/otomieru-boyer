@@ -1,13 +1,13 @@
 # Current State
 
-Updated: 1789638580
+Updated: 1789649371
 
 Now:
-- Done: Freeze中の再生位置線補間を停止し、Freeze波形を4重オーバーラップ加算へ修正した。
+- Done: CMP-05・EXC-04を通常再生中のEQ／オクターブ操作制約へ訂正。
+- Done: モノラル／ステレオ実機確認を今回のリリース判定外へ変更。
 
 Next:
-- Linux実機で位置線停止とFreeze音の連続性を再確認する。
-- 比較フェーズの最終ミックス全体をFreezeするため、音高メモ出力を統合する。
+- AUT-06、AUT-08、AUT-09の自動テストを必要に応じて実装する。
 
 Constraints:
 - Keep session.md short and optimized for Codex resumption.

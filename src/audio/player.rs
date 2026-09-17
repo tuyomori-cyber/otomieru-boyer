@@ -583,3 +583,81 @@ fn select_output_config(
 
     Ok(best_default_channel_match.unwrap_or(default_config))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{PlaybackRuntime, TransportState, write_data};
+    use crate::audio::comparison::ComparisonAudioControl;
+    use crate::model::Track;
+    use cpal::{BufferSize, SampleRate, StreamConfig};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    const TRANSITION_FRAMES: usize = 960;
+
+    fn runtime() -> Arc<PlaybackRuntime> {
+        let track = Track {
+            sample_rate: 48_000,
+            duration_seconds: 1.0,
+            channels: 1,
+            samples: (0..48_000)
+                .map(|frame| (frame as f32 * 0.01).sin())
+                .collect(),
+            spectrogram: None,
+        };
+        let config = StreamConfig {
+            channels: 1,
+            sample_rate: SampleRate(48_000),
+            buffer_size: BufferSize::Default,
+        };
+        let runtime = Arc::new(PlaybackRuntime::from_track(
+            &track,
+            &config,
+            Arc::new(ComparisonAudioControl::default()),
+        ));
+        let mut settings = runtime.current_dsp_settings();
+        settings.preserve_pitch_on_speed_change = false;
+        runtime.set_dsp_settings(settings);
+        runtime
+    }
+
+    #[test]
+    fn freeze_holds_transport_loop_and_comparison_until_deactivation_finishes() {
+        let runtime = runtime();
+        runtime
+            .transport
+            .store(TransportState::Playing.as_u8(), Ordering::Relaxed);
+        runtime.set_position_frames(100.0);
+        runtime.loop_enabled.store(true, Ordering::Relaxed);
+        runtime
+            .loop_start_frames_bits
+            .store(50.0f64.to_bits(), Ordering::Relaxed);
+        runtime
+            .loop_end_frames_bits
+            .store(150.0f64.to_bits(), Ordering::Relaxed);
+        runtime.comparison_control.enable_from_start();
+        let comparison_before = runtime.comparison_control.snapshot();
+
+        runtime.spectral_freeze.activate(100.0, |frame, channel| {
+            runtime
+                .dsp_engine
+                .render_source_sample(frame as f64, channel)
+        });
+        let mut output = vec![0.0_f32; TRANSITION_FRAMES + 32];
+        write_data(&mut output, 1, &runtime);
+
+        assert_eq!(runtime.current_position_frames(), 100.0);
+        assert_eq!(runtime.comparison_control.snapshot(), comparison_before);
+
+        runtime.spectral_freeze.begin_deactivation();
+        let mut output = vec![0.0_f32; TRANSITION_FRAMES];
+        write_data(&mut output, 1, &runtime);
+        assert_eq!(runtime.current_position_frames(), 100.0);
+        assert!(!runtime.spectral_freeze.is_active());
+
+        write_data(&mut [0.0_f32], 1, &runtime);
+        assert!(runtime.current_position_frames() > 100.0);
+        assert!(runtime.current_position_frames() < 150.0);
+        assert_eq!(runtime.comparison_control.snapshot(), comparison_before);
+    }
+}

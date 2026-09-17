@@ -217,6 +217,18 @@ mod tests {
     }
 
     #[test]
+    fn settings_do_not_persist_freeze_runtime_state() {
+        let path = test_path();
+
+        save_app_settings_to(&path, &AppSettings::default()).unwrap();
+        let json = fs::read_to_string(&path).unwrap().to_lowercase();
+
+        assert!(!json.contains("the_world"));
+        assert!(!json.contains("freeze"));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
     fn unsupported_format_version_is_rejected() {
         let path = test_path();
         save_app_settings_to(&path, &AppSettings::default()).unwrap();
